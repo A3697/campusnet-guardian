@@ -1,0 +1,32 @@
+[
+  {
+    "username": "2024123456",
+    "password": "pwd",
+    "ip": "10.0.0.5",
+    "acid": "1",
+    "challenge": "abc123",
+    "hmd5": "a6af8e5dac05fd463c82787f053115ea",
+    "info": "{SRBX1}lyp92vlriEVNYxXvH8WtL1sO++Gh+/0k7c2j7cR5qHzYfXRTcj/iumSZ7W/44snZrk5QMXGZ11HHJkldMF9sKoh91xiOlEDTbPBJNlyJE4lcbKMQM6A0p1VuKe2ws3Dv",
+    "chksum": "4b115cb4b71ff1c56fdf778a326c15f310bf4d2b"
+  },
+  {
+    "username": "test-user",
+    "password": "Example!9876",
+    "ip": "100.78.1.2",
+    "acid": "1",
+    "challenge": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "hmd5": "16aaa105d05140a6e012d34a50462257",
+    "info": "{SRBX1}QqLVZKvItcLuDXyZrBYyDwxzoTLJ1sRbBuvh3rnFrK/Ht1MP3eifYedGggFunsI3bmAZhawKYPFlD6R2I3YbkPXu+6vQEe6UsxbaBw4gcpHh9xN3M84DGdBLoOpDbYkaZGOmCFcJ5fH=",
+    "chksum": "10eef4dd3363ee56c74a21294751b64bdd834125"
+  },
+  {
+    "username": "test-user",
+    "password": "测试🔑Password",
+    "ip": "10.10.1.2",
+    "acid": "2",
+    "challenge": "9876543210abcdef",
+    "hmd5": "046de8d963c1f6432e99cb9befe0cd59",
+    "info": "{SRBX1}azFVYdMcKnoFL8/wuM6j4hG9ra0kfJqWLWMu5pyegWv1PtvdIGXtjs6g+hYkwmReOsMJYgpDoMNdNvij8vl233re00dsFzbDeAuWBN7iATl+yuitQiJNKBmFnK4kDOPO2XGD3Ky1QAY=",
+    "chksum": "8207cd5abd901ab0bb586c94090a6b7e5a022e6e"
+  }
+]

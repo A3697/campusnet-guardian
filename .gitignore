@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+build/
+dist/
+!skill/dist/
+*.egg-info/
+profile/
+*.log
+packaging/output/
+packaging/payload/校园网连接守护.exe
+.env
+.env.*

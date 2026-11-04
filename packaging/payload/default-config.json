@@ -1,0 +1,22 @@
+{
+  "username": "",
+  "provider": "srun",
+  "portal_ip": "https://huade.m5d.cn",
+  "wifi_ssid": "",
+  "verify_url": "http://connect.rom.miui.com/generate_204",
+  "timeout": 8,
+  "use_proxy": false,
+  "options": {
+    "carrier": "cmcc",
+    "reconnect_interval": 5,
+    "reconnect_delay": 60,
+    "ac_id": "1",
+    "srun_domains": {
+      "cmcc": "cmcc",
+      "telecom": "ctcc",
+      "unicom": "cucc"
+    },
+    "verify_srun_session": true,
+    "verify_portal_tls": true
+  }
+}
