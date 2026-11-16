@@ -22,7 +22,7 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import __version__, autostart, carrier, policy, singleton
+from . import __version__, autostart, carrier, policy, singleton, updater
 from . import wifi as _wifi
 from .config import Config, _keyring_set, has_keyring, runtime_log_dir
 from .runner import Runner
@@ -123,6 +123,9 @@ class App:
         self._tray: Any = None
         self._policy_win: Any = None
         self._policy_canvas: Any = None
+        self._update_info = None
+        self._update_cancel = None
+        self._quit_after_update = False
 
         self._build_window()
         self._build_main()
@@ -177,9 +180,15 @@ class App:
         def safe() -> None:
             try:
                 fn(*args)
+            except updater.DownloadCancelled as exc:
+                self.q.put(("update_error", str(exc)))
             except Exception as exc:  # noqa: BLE001 - 线程里的错必须兜住
                 detail = traceback.format_exc()
                 path = _write_error_log(detail)
+                if fn in (self._job_check_update, self._job_download_update, self._job_install_update):
+                    message = str(exc) if isinstance(exc, updater.UpdateError) else "更新未完成，请稍后重试。详细原因已写入运行日志。"
+                    self.q.put(("update_error", message))
+                    return
                 if fn == self._job_state:
                     kind = "state_error"
                 elif fn in (self._job_connect, self._job_health, self._job_save_setup, self._job_toggle_autostart, self._job_discover_portal):
@@ -438,6 +447,97 @@ class App:
         self.btn_pause.pack(side="left", padx=(0, self._px(8)))
         self.btn_resume = self._button(pause, "恢复重连", self.resume_reconnect)
         self.btn_resume.pack(side="left")
+
+        card = self._card(content, pady=14)
+        self._update_card = card
+        card.pack(fill="x", padx=self._px(24), pady=(self._px(12), 0))
+        self._label(card, "软件更新", bg_=CARD, font=FONT_BOLD).pack(anchor="w")
+        self._label(card, "当前版本：" + __version__, bg_=CARD, fg=MUTED, font=FONT_SMALL).pack(anchor="w", pady=(self._px(6), 0))
+        self.lbl_update_status = self._label(card, "从 GitHub 获取本项目发布的更新。", bg_=CARD, fg=MUTED, justify="left", font=FONT_SMALL)
+        self.lbl_update_status.pack(fill="x", pady=self._px(8))
+        self.lbl_update_status.bind("<Configure>", lambda e: self.lbl_update_status.configure(wraplength=max(100, e.width)))
+        self.update_progress = ttk.Progressbar(card, mode="determinate", maximum=100)
+        row = tk.Frame(card, bg=CARD)
+        row.pack(fill="x")
+        self.btn_check_update = self._button(row, "检查更新", self.check_update)
+        self.btn_check_update.pack(side="left", padx=(0, self._px(8)))
+        self.btn_install_update = self._button(row, "下载并安装", self.install_update, "primary")
+        self.btn_install_update.pack(side="left", padx=(0, self._px(8)))
+        self.btn_install_update.configure(state="disabled")
+        self.btn_cancel_update = self._button(row, "取消下载", self.cancel_update)
+
+    # ------------------------------------------------------------ 软件更新
+    def check_update(self) -> None:
+        if self._busy or self._page != "main" or self._policy_win is not None:
+            return
+        self._update_info = None
+        self.lbl_update_status.configure(text="正在连接 GitHub，检查新版本…", fg=MUTED)
+        self._start_action(self._job_check_update, "正在检查软件更新…")
+
+    def _job_check_update(self) -> None:
+        self.q.put(("update_info", updater.fetch_latest()))
+
+    def install_update(self) -> None:
+        from tkinter import messagebox
+        if self._busy or not self._update_info:
+            return
+        try:
+            directory = updater.installation_dir()
+        except updater.UpdateError as exc:
+            self._update_error(str(exc))
+            return
+        info = self._update_info
+        if not messagebox.askyesno("安装更新", "将更新到 {}。\n\n下载并校验后会关闭当前程序，安装完成后重新打开。账号、密码和重连设置会保留。\n\n现在下载并安装吗？".format(info.version), parent=self.root):
+            return
+        self._update_cancel = threading.Event()
+        self.update_progress.configure(value=0)
+        self.update_progress.pack(fill="x", pady=(0, self._px(8)), before=self.btn_check_update.master)
+        self.btn_cancel_update.configure(state="normal")
+        self.btn_cancel_update.pack(side="left")
+        self._start_action(self._job_download_update, "正在下载更新，可点击“取消下载”。", info, directory, self._update_cancel)
+
+    def _job_download_update(self, info, directory, cancel) -> None:
+        last_percent = [-1]
+        def progress(received, total):
+            percent = int(100 * received / total)
+            if percent != last_percent[0]:
+                last_percent[0] = percent
+                self.q.put(("update_progress", received, total))
+        path = updater.download(info, directory / "profile" / "updates", progress, cancel)
+        self.q.put(("update_downloaded", path, info, directory))
+
+    def _job_install_update(self, path, info, directory) -> None:
+        process = updater.start_install(path, info, directory)
+        self.q.put(("update_started",))
+        code = process.wait()
+        if code:
+            raise updater.UpdateError("安装未完成（返回代码 {}）。当前程序仍可使用，可稍后重试；安装记录位于 profile/update-install.log。".format(code))
+        self.q.put(("update_finished",))
+
+    def cancel_update(self) -> None:
+        if self._update_cancel is not None and self._active_job == self._job_download_update:
+            self._update_cancel.set()
+            self.btn_cancel_update.configure(state="disabled")
+            self.lbl_update_status.configure(text="正在取消下载，请稍候…", fg=MUTED)
+
+    def _update_error(self, message: str) -> None:
+        self._set_busy(False, "")
+        self.update_progress.pack_forget()
+        self.btn_cancel_update.pack_forget()
+        self.lbl_update_status.configure(text=message, fg=AMBER)
+        self._feedback(message, "warn")
+        self._append_log(message, "warn")
+        if self._quit_after_update:
+            self._quit_after_update = False
+            self.root.after_idle(self.quit_app)
+
+    def _show_updates(self) -> None:
+        self.show_window()
+        if self._page != "main" or self._policy_win is not None:
+            self._feedback("请先保存或取消正在编辑的设置，再检查更新。", "warn")
+            return
+        self.root.after_idle(lambda: self._reveal_focus(type("Event", (), {"widget": self.btn_check_update})()))
+        self.check_update()
 
     # ------------------------------------------------------------ 设置面板
     def _build_setup(self) -> None:
@@ -759,7 +859,37 @@ class App:
 
     def _dispatch(self, msg: Tuple) -> None:
         kind = msg[0]
-        if kind == "log":
+        if kind == "update_info":
+            info = msg[1]
+            self._update_info = info if info.newer_than(__version__) else None
+            self._set_busy(False, "")
+            text = ("发现新版本：{}\n{}".format(info.version, info.notes).strip()
+                    if self._update_info else "当前已是最新版本。")
+            self.lbl_update_status.configure(text=text, fg=GREEN)
+            self._feedback(text.split("\n")[0], "ok")
+        elif kind == "update_progress":
+            if self._active_job == self._job_download_update and not self._update_cancel.is_set():
+                self.update_progress.configure(value=100 * msg[1] / msg[2])
+                self.lbl_update_status.configure(text="已下载 {:.1f} / {:.1f} MB".format(msg[1]/1048576, msg[2]/1048576), fg=MUTED)
+        elif kind == "update_downloaded":
+            if self._update_cancel.is_set():
+                self._update_error("已取消下载，当前版本未改变。")
+            else:
+                self.btn_cancel_update.pack_forget()
+                self.lbl_update_status.configure(text="校验通过，正在启动安装程序…", fg=GREEN)
+                self._active_job = self._job_install_update
+                self._spawn(self._job_install_update, *msg[1:])
+        elif kind == "update_started":
+            self.lbl_update_status.configure(text="安装程序已启动，完成后将重新打开应用。", fg=GREEN)
+        elif kind == "update_finished":
+            self._set_busy(False, "")
+            self.update_progress.pack_forget()
+            self._update_info = None
+            self.btn_install_update.configure(state="disabled")
+            self.lbl_update_status.configure(text="安装完成，请在重新打开的窗口中使用新版本。", fg=GREEN)
+        elif kind == "update_error":
+            self._update_error(msg[1])
+        elif kind == "log":
             self._append_log(msg[1], msg[2])
         elif kind == "state":
             self._state_pending = False
@@ -855,6 +985,8 @@ class App:
             widget.configure(state="disabled" if busy else
                              ("readonly" if widget in (self.var_carrier_widget, self.combo_provider) else "normal"))
         self._portal_mode_changed()
+        self.btn_check_update.configure(state=state)
+        self.btn_install_update.configure(state="normal" if not busy and self._update_info else "disabled")
         if busy:
             self.progress.pack(fill="x", pady=(self._px(6), 0))
             self.progress.start(12)
@@ -1514,6 +1646,7 @@ class App:
             )),
             Menu.SEPARATOR,
             Item("打开重连策略…", open_policy, enabled=lambda item: not self._busy),
+            Item("检查软件更新", lambda icon=None, item=None: self._post(self._show_updates), enabled=lambda item: not self._busy),
             Item("退出", quit_app),
         )
 
@@ -1539,11 +1672,18 @@ class App:
         self._append_log("已最小化到系统托盘，双击托盘图标可以重新打开", "info")
 
     def quit_app(self) -> None:
+        if self._active_job == self._job_download_update:
+            self._quit_after_update = True
+            self.cancel_update()
+            self._feedback("正在取消下载，完成后退出。", "warn")
+            return
         if self._active_job == self._job_save_setup:
             self.show_window()
             self._feedback("正在保存账号设置，完成后可退出。", "warn")
             return
         self._closing = True
+        if self._update_cancel is not None:
+            self._update_cancel.set()
         if self._tray is not None:
             try:
                 self._tray.stop()

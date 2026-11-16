@@ -13,3 +13,5 @@ if ($LASTEXITCODE -ne 0) { throw '生成源码包失败。' }
 Copy-Item -LiteralPath $exe -Destination (Join-Path $PSScriptRoot 'payload\校园网连接守护.exe') -Force
 & $Compiler (Join-Path $PSScriptRoot 'CampusNetGuardian.iss')
 if ($LASTEXITCODE -ne 0) { throw "安装包编译失败：$LASTEXITCODE" }
+& $Python (Join-Path $PSScriptRoot 'publish-files.py')
+if ($LASTEXITCODE -ne 0) { throw '生成 GitHub 更新文件失败。' }

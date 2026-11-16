@@ -6,9 +6,9 @@
 
 ## 下载与安装
 
-**[下载 Windows 安装包](https://github.com/A3697/campusnet-guardian/raw/refs/heads/main/downloads/CampusNetGuardian-20261116.1-Setup.exe)** · [SHA-256 校验值](downloads/SHA256.txt)
+**[下载 Windows 安装包](https://github.com/A3697/campusnet-guardian/raw/refs/heads/main/downloads/CampusNetGuardian-20261116.2-Setup.exe)** · [SHA-256 校验值](downloads/SHA256.txt)
 
-- 版本：`0.1.3+desktop.20261116.1`
+- 版本：`0.1.4+desktop.20261116.2`
 - 系统：Windows 10 / 11，64 位
 - 默认安装目录：`D:\campusnet`
 - 安装包内置运行环境，不需要另行安装 Python。
@@ -30,6 +30,7 @@
 
 ## 主要功能
 
+- 从 GitHub 检查新版本、查看更新说明、下载并安装更新。
 - 自动获取登录地址、认证方式及页面提供的参数，保留手动设置方式。
 - 登录 Windows 后启动托盘和后台，立即检查校园网会话并尝试认证。
 - 定时检查网络，掉线后等待一段时间再尝试重连。
@@ -41,6 +42,14 @@
 默认每 5 分钟检查一次，发现掉线后等待 60 秒再确认并登录。这些设置可以在“重连策略”中调整。暂停和时段限制也适用于登录 Windows 时的自动认证。
 
 密码默认显示在界面中，可取消“显示密码”隐藏。密码保存在当前 Windows 用户的凭据管理器中。
+
+## 更新应用
+
+在主窗口的“软件更新”中点击“检查更新”，也可以从托盘菜单进入。发现新版本后，点击“下载并安装”并确认。下载过程中会显示进度，可以取消；文件大小和 SHA-256 校验通过后，才会启动安装程序。
+
+更新来自本仓库的 `downloads/latest.json` 和对应安装包，使用 HTTPS 连接 GitHub。下载会使用系统代理；连接失败时会尝试直接连接和 GitHub 官方接口。网络错误、下载不完整或校验失败时，会显示原因并保留当前程序，可稍后重试。
+
+升级安装到当前目录，保留账号、Windows 凭据、重连策略、自启项和快捷方式，完成后重新打开应用。更新期间会暂时关闭托盘和后台。安装记录位于 `profile/update-install.log`。
 
 ## 配置与卸载
 
@@ -80,7 +89,7 @@ py -3.14 -m venv .venv
 .\packaging\build-installer.ps1 -Compiler 'C:\Program Files\Inno Setup 7\ISCC.exe' -Python '.\.venv\Scripts\python.exe'
 ```
 
-安装包生成在 `packaging\output`。构建脚本只使用仓库中的空白账号模板，不会复制电脑上的个人配置。
+安装包生成在 `packaging\output`。构建脚本同时生成 `downloads` 中的版本安装包、SHA-256 校验值和 `latest.json`，应将这些文件与源码一起提交到 GitHub。构建脚本只使用仓库中的空白账号模板，不会复制电脑上的个人配置。
 
 运行测试：
 

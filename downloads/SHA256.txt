@@ -1,1 +1,1 @@
-093f85366a63d36de8f4631f372dd570b8b254c773f88df42ebd3cf8bcc36b00  CampusNetGuardian-20261116.1-Setup.exe
+a7d83e6f1adb78aa945853d1951dd5d060f9094ee35d4e3288da41fb9c052c68  CampusNetGuardian-20261116.2-Setup.exe

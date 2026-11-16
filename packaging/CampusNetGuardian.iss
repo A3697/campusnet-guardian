@@ -1,17 +1,20 @@
 #define AppName "校园网连接守护"
-#define AppVersion "0.1.3+desktop.20261116.1"
+#define AppVersion "0.1.4+desktop.20261116.2"
 #define AppExe "校园网连接守护.exe"
+#ifndef AppId
+  #define AppId "CampusNetGuardian.Desktop"
+#endif
 
 [Setup]
-AppId=CampusNetGuardian.Desktop
+AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher=demo133 / campusnet contributors
 AppPublisherURL=https://github.com/demo133/campusnet
 AppSupportURL=https://github.com/A3697/campusnet-guardian
-VersionInfoVersion=0.1.3.1
-VersionInfoProductVersion=0.1.3.1
+VersionInfoVersion=0.1.4.2
+VersionInfoProductVersion=0.1.4.2
 VersionInfoProductTextVersion={#AppVersion}
 VersionInfoDescription={#AppName} 安装程序
 VersionInfoCopyright=Copyright (c) 2026 campusnet contributors
@@ -32,7 +35,7 @@ UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 UninstallFilesDir={app}
 OutputDir=output
-OutputBaseFilename=校园网连接守护-20261116.1-安装包
+OutputBaseFilename=校园网连接守护-20261116.2-安装包
 Compression=lzma2
 SolidCompression=yes
 CloseApplications=no
@@ -66,7 +69,8 @@ Name: "{userdesktop}\工具\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir
 Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Tasks: startmenuicon
 
 [Run]
-Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Description: "打开{#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Description: "打开{#AppName}"; Flags: nowait postinstall skipifsilent; Check: not IsAppUpdate
+Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Flags: nowait; Check: IsAppUpdate
 
 [Code]
 const
@@ -75,6 +79,12 @@ const
 
 var
   StartupWarning: String;
+  UpdateAppStopped, UpdateAppStarted: Boolean;
+
+function IsAppUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
 
 function DefaultInstallDir(Param: String): String;
 begin
@@ -141,14 +151,21 @@ begin
       Remaining := 0;
       Processes := Service.ExecQuery('SELECT * FROM Win32_Process WHERE Name="{#AppExe}" OR Name="校园网助手.exe"');
       for I := 0 to Processes.Count - 1 do begin
-        Process := Processes.ItemIndex(I);
-        if not VarIsNull(Process.ExecutablePath) then begin
-          ImagePath := Process.ExecutablePath;
-          if IsOurExecutable(ImagePath) then begin
-            Remaining := Remaining + 1;
-            Log('Closing application in selected install directory: ' + ImagePath);
-            Process.Terminate(0);
+        try
+          Process := Processes.ItemIndex(I);
+          if not VarIsNull(Process.ExecutablePath) then begin
+            ImagePath := Process.ExecutablePath;
+            if IsOurExecutable(ImagePath) then begin
+              Remaining := Remaining + 1;
+              Log('Closing application in selected install directory: ' + ImagePath);
+              Process.Terminate(0);
+            end;
           end;
+        except
+          { A parent may exit together with its child after enumeration. Recheck
+            the remaining processes before deciding whether closing succeeded. }
+          Remaining := Remaining + 1;
+          Log('A process changed during shutdown; checking the process list again.');
         end;
       end;
       if Remaining = 0 then Exit;
@@ -162,7 +179,12 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  if IsAppUpdate and not FileExists(ExpandConstant('{app}\{#AppExe}')) then begin
+    Result := '没有找到需要升级的程序，请重新检查安装目录。';
+    Exit;
+  end;
   Result := StopInstalledApp;
+  UpdateAppStopped := IsAppUpdate and (Result = '');
 end;
 
 procedure RegisterStartup;
@@ -192,11 +214,26 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if IsAppUpdate then begin
+    if CurStep = ssPostInstall then Log('Update mode: startup registration and shortcuts are preserved.');
+    if CurStep = ssDone then UpdateAppStarted := True;
+    Exit;
+  end;
   if CurStep = ssPostInstall then begin
     if not WizardIsTaskSelected('startup') then
       RemoveOwnedStartup
     else
       RegisterStartup;
+  end;
+end;
+
+procedure DeinitializeSetup;
+var
+  ResultCode: Integer;
+begin
+  if UpdateAppStopped and not UpdateAppStarted and FileExists(ExpandConstant('{app}\{#AppExe}')) then begin
+    Log('Update did not finish; reopening the available application.');
+    Exec(ExpandConstant('{app}\{#AppExe}'), '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode);
   end;
 end;
 

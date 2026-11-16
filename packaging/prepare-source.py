@@ -17,7 +17,8 @@ def main():
         "campusnet_gui.py", "CampusNetGuardian.spec", "requirements-build.txt",
         "pyproject.toml", "README.md", "RELEASE_NOTES.md", "AUTHORS.md", "LICENSE", "使用说明.txt",
         "release/app_icon.ico", "packaging/app_icon.ico", "packaging/CampusNetGuardian.iss",
-        "packaging/build-installer.ps1", "packaging/prepare-source.py", "packaging/payload/default-config.json",
+        "packaging/build-installer.ps1", "packaging/prepare-source.py", "packaging/publish-files.py",
+        "release/UPDATE_NOTES.txt", "packaging/payload/default-config.json",
     )]
     for folder in ("campusnet", "tests"):
         files.extend(sorted((root / folder).rglob("*.py")))
