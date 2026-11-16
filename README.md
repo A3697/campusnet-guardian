@@ -6,9 +6,9 @@
 
 ## 下载与安装
 
-**[下载 Windows 安装包](https://github.com/A3697/campusnet-guardian/raw/refs/heads/main/downloads/CampusNetGuardian-20261116.3-Setup.exe)** · [SHA-256 校验值](downloads/SHA256.txt)
+**[下载 Windows 安装包](https://github.com/A3697/campusnet-guardian/raw/refs/heads/main/downloads/CampusNetGuardian-20261116.4-Setup.exe)** · [SHA-256 校验值](downloads/SHA256.txt)
 
-- 版本：`0.1.4+desktop.20261116.3`
+- 版本：`0.1.4+desktop.20261116.4`
 - 系统：Windows 10 / 11，64 位
 - 默认安装目录：`D:\campusnet`
 - 安装包内置运行环境，不需要另行安装 Python。

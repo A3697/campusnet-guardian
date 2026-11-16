@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -107,7 +108,7 @@ class _GitHubRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _open(url: str, use_proxy: bool = True):
+def _open(url: str, use_proxy: bool = True, offset: int = 0):
     if not _trusted_url(url):
         raise UpdateError("更新地址不属于本项目，已停止更新。")
     handlers = [_GitHubRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context())]
@@ -118,6 +119,8 @@ def _open(url: str, use_proxy: bool = True):
         "User-Agent": "CampusNetGuardian-Updater", "Accept": "application/vnd.github.raw+json",
         "Cache-Control": "no-cache", "Accept-Encoding": "identity",
     })
+    if offset:
+        request.add_header("Range", "bytes={}-".format(offset))
     return opener.open(request, timeout=15)
 
 
@@ -134,7 +137,7 @@ def fetch_latest() -> UpdateInfo:
         try:
             with _open(url, use_proxy) as response:
                 return parse_manifest(response.read(MAX_MANIFEST_SIZE + 1))
-        except (OSError, ValueError, UpdateError) as exc:
+        except (OSError, ValueError, UpdateError, http.client.HTTPException) as exc:
             last = exc
     if isinstance(last, UpdateError):
         raise last
@@ -169,6 +172,7 @@ def download(info: UpdateInfo, directory: Path, progress=None, cancel=None) -> P
     """Only publish a complete, verified file. Cancel/error removes this attempt's partial file."""
     _cancelled(cancel)
     directory = Path(directory)
+    temporary = None
     try:
         directory.mkdir(parents=True, exist_ok=True)
         destination = directory / info.filename
@@ -182,18 +186,33 @@ def download(info: UpdateInfo, directory: Path, progress=None, cancel=None) -> P
                 _cancelled(cancel)
         deadline = time.monotonic() + MAX_DOWNLOAD_SECONDS
         last = None
-        for url, use_proxy in _sources(info.filename):
+        descriptor, temporary_name = tempfile.mkstemp(dir=directory, prefix="download-", suffix=".part")
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        received = 0
+        sources = list(_sources(info.filename))
+        # Retry the last official route if its response was cut short.
+        sources += sources[-1:] * 2
+        for url, use_proxy in sources:
             _cancelled(cancel)
             if time.monotonic() >= deadline:
                 break
-            temporary = None
             try:
                 if progress:
-                    progress(0, info.size)
-                with _open(url, use_proxy) as response:
-                    with tempfile.NamedTemporaryFile(dir=directory, prefix="download-", suffix=".part", delete=False) as stream:
-                        temporary = Path(stream.name)
+                    progress(received, info.size)
+                response = _open(url, use_proxy, received) if received else _open(url, use_proxy)
+                with response:
+                    status = getattr(response, "status", 200)
+                    if status == 206:
+                        span = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
+                        if not span or tuple(map(int, span.groups())) != (received, info.size - 1, info.size):
+                            raise UpdateError("续传的数据范围与安装包不一致，未开始安装。")
+                    elif status == 200:
+                        # A server may ignore Range; restart instead of appending a full file.
                         received = 0
+                    else:
+                        raise UpdateError("下载服务器返回了异常状态，未开始安装。")
+                    with temporary.open("ab" if received else "wb") as stream:
                         while True:
                             _cancelled(cancel)
                             if time.monotonic() >= deadline:
@@ -213,13 +232,15 @@ def download(info: UpdateInfo, directory: Path, progress=None, cancel=None) -> P
                 return destination
             except DownloadCancelled:
                 raise
-            except (OSError, ValueError, UpdateError) as exc:
+            except (OSError, ValueError, UpdateError, http.client.HTTPException) as exc:
                 if isinstance(exc, OSError) and exc.errno in (13, 28):
                     raise UpdateError("无法保存更新文件，请检查安装目录权限和磁盘空间。") from exc
                 last = exc
-            finally:
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
+                received = temporary.stat().st_size
+                if received >= info.size:
+                    # An oversized or corrupt complete response must never be resumed.
+                    temporary.write_bytes(b"")
+                    received = 0
         if isinstance(last, UpdateError):
             raise last
         raise UpdateError("安装包下载失败，当前版本未改变。请检查网络后重试。") from last
@@ -227,6 +248,9 @@ def download(info: UpdateInfo, directory: Path, progress=None, cancel=None) -> P
         raise
     except OSError as exc:
         raise UpdateError("无法保存更新文件，请检查安装目录权限和磁盘空间。") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def installation_dir() -> Path:

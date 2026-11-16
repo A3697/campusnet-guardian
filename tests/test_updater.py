@@ -1,4 +1,5 @@
 import hashlib
+import http.client
 import io
 import json
 from pathlib import Path
@@ -205,6 +206,66 @@ def test_cancel_responds_before_slow_server_finishes_a_chunk(monkeypatch,tmp_pat
         server.server_close()
     assert timed_out == [False]
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_interrupted_download_resumes_verified_byte_range(monkeypatch,tmp_path,interrupted):
+    cutoff = 17321
+    calls = []
+    class Partial(io.BytesIO):
+        def read1(self, size=-1):
+            if self.tell() == cutoff and interrupted:
+                raise http.client.IncompleteRead(b"")
+            return super().read1(size)
+    class Remainder(io.BytesIO):
+        status = 206
+        headers = {"Content-Range": "bytes {}-{}/{}".format(cutoff,len(PAYLOAD)-1,len(PAYLOAD))}
+    def open_(url,proxy,offset=0):
+        calls.append(offset)
+        return Partial(PAYLOAD[:cutoff]) if len(calls)==1 else Remainder(PAYLOAD[offset:])
+    monkeypatch.setattr(updater,"_open",open_)
+    path = updater.download(info(),tmp_path)
+    assert path.read_bytes() == PAYLOAD and calls == [0,cutoff]
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_server_ignoring_range_restarts_without_appending(monkeypatch,tmp_path):
+    calls = []
+    def open_(url,proxy,offset=0):
+        calls.append(offset)
+        return io.BytesIO(PAYLOAD[:23] if len(calls)==1 else PAYLOAD)
+    monkeypatch.setattr(updater,"_open",open_)
+    assert updater.download(info(),tmp_path).read_bytes() == PAYLOAD
+    assert calls == [0,23]
+
+
+@pytest.mark.parametrize("span", ["bytes 0-9/10", "bytes 23-99/*", "bytes 24-{} /{}".format(len(PAYLOAD)-1,len(PAYLOAD)), ""])
+def test_invalid_resume_range_never_installs(monkeypatch,tmp_path,span):
+    calls = []
+    class InvalidRange(io.BytesIO):
+        status = 206
+        headers = {"Content-Range":span}
+    def open_(url,proxy,offset=0):
+        calls.append(offset)
+        return io.BytesIO(PAYLOAD[:23]) if len(calls)==1 else InvalidRange(PAYLOAD[23:])
+    monkeypatch.setattr(updater,"_open",open_)
+    with pytest.raises(updater.UpdateError,match="续传的数据范围"):
+        updater.download(info(),tmp_path)
+    assert calls[1:] and all(offset==23 for offset in calls[1:])
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_resume_request_sends_range_without_credentials(monkeypatch):
+    recorded = {}
+    class Opener:
+        def open(self,request,timeout):
+            recorded.update(request.header_items())
+            return io.BytesIO(b"")
+    monkeypatch.setattr(urllib.request,"build_opener",lambda *args:Opener())
+    with updater._open(updater._urls("update.exe")[1],False,123):
+        pass
+    assert recorded["Range"] == "bytes=123-"
+    assert "Authorization" not in recorded and "Cookie" not in recorded
 
 
 @pytest.mark.skipif(updater.os.name!="nt",reason="Windows installer command")

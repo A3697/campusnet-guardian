@@ -48,7 +48,7 @@ FORBIDDEN = {
 
 #: 文本文件才检查；二进制产物（zip / 图片）不在这里管。
 TEXT_EXT = {".md", ".py", ".sh", ".json", ".txt", ".yml", ".yaml", ".html", ".toml"}
-SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "dist"}
+SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", "dist", "build"}
 
 #: 文档里出现的连续数字串。**长度 ≥10 的全数字串**通常就是没打码的学号，
 #: 值得人看一眼；测试代码里有大量伪造账号，所以只扫文档。
