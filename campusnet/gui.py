@@ -182,7 +182,7 @@ class App:
                 path = _write_error_log(detail)
                 if fn == self._job_state:
                     kind = "state_error"
-                elif fn in (self._job_connect, self._job_health, self._job_save_setup, self._job_toggle_autostart):
+                elif fn in (self._job_connect, self._job_health, self._job_save_setup, self._job_toggle_autostart, self._job_discover_portal):
                     kind = "fatal"
                 else:
                     kind = "background_error"
@@ -479,6 +479,9 @@ class App:
         self.var_username.trace_add("write", self._on_setup_username_change)
         self.var_ssid = tk.StringVar()
         self.var_autostart = tk.BooleanVar(value=True)
+        self.var_auto_portal = tk.BooleanVar(value=True)
+        self.var_portal = tk.StringVar()
+        self._setup_discovery = None
 
         def field(row: int, title: str, widget, hint: str = "") -> None:
             self._label(card, title, bg_=CARD, font=FONT_BOLD)\
@@ -519,8 +522,23 @@ class App:
                                    variable=self.var_autostart)
         chk_auto.grid(row=12, column=0, sticky="w",
                       pady=(self._px(14), self._px(2)))
+        chk_portal = ttk.Checkbutton(card, text="自动获取登录地址和认证方式", variable=self.var_auto_portal,
+                                    command=self._portal_mode_changed)
+        chk_portal.grid(row=13, column=0, sticky="w", pady=(self._px(14), self._px(2)))
+        self.ent_portal = ttk.Entry(card, textvariable=self.var_portal, font=FONT)
+        field(14, "校园网登录地址", self.ent_portal)
+        from .providers import PROVIDERS
+        self.provider_map = {p.display_name: name for name, p in PROVIDERS.items() if name != "custom"}
+        self.combo_provider = ttk.Combobox(card, font=FONT, state="readonly", values=list(self.provider_map))
+        field(17, "认证方式", self.combo_provider)
+        self.btn_discover = self._button(card, "获取登录地址", self.discover_portal)
+        self.btn_discover.grid(row=20, column=0, sticky="w", pady=(self._px(8), self._px(4)))
+        self.lbl_portal_hint = self._label(card, "连接校园网后自动识别；也可取消勾选后手动填写。", bg_=CARD, fg=MUTED, font=FONT_SMALL)
+        self.lbl_portal_hint.grid(row=21, column=0, sticky="ew", pady=(0, self._px(8)))
+        self.lbl_portal_hint.bind("<Configure>", lambda e: self.lbl_portal_hint.configure(wraplength=max(100, e.width)))
         card.grid_columnconfigure(0, weight=1)
-        self._setup_inputs = [ent_user, self.ent_pw, combo, ent_ssid, chk_auto]
+        self._setup_inputs = [ent_user, self.ent_pw, combo, ent_ssid, chk_auto,
+                              chk_portal, self.ent_portal, self.combo_provider, self.btn_discover]
 
         self.lbl_setup_error = self._label(inner, "", bg_=BG,
                                            fg=RED, font=FONT_SMALL)
@@ -687,6 +705,26 @@ class App:
         self._setup_canvas.yview_moveto(0)
         self.ent_user.focus_set()
 
+        self._setup_discovery = None
+        self.var_auto_portal.set(self.cfg.automatic_portal)
+        self.var_portal.set(self.cfg.portal_ip)
+        self.combo_provider.set(next((label for label, code in self.provider_map.items() if code == self.cfg.provider), ""))
+        self._portal_mode_changed()
+
+    def _portal_mode_changed(self) -> None:
+        disabled = self._busy or self.var_auto_portal.get()
+        self.ent_portal.configure(state="disabled" if disabled else "normal")
+        self.combo_provider.configure(state="disabled" if disabled else "readonly")
+
+    def discover_portal(self) -> None:
+        self._start_action(self._job_discover_portal, "正在获取校园网登录地址…")
+
+    def _job_discover_portal(self) -> None:
+        cfg = Config.from_dict(self.cfg.to_dict())
+        cfg.portal_mode = "auto"
+        # Discovery does not read or send a password.
+        self.q.put(("portal_found", Runner(cfg).detect()))
+
     def _refresh_password_visibility(self) -> None:
         visible = self.var_show_pw.get()
         self.ent_pw.configure(show="" if visible else "●")
@@ -748,6 +786,20 @@ class App:
             self._append_log(msg[1] + "\n" + msg[2], "error")
             if self._page == "setup":
                 self.lbl_setup_error.configure(text=msg[1])
+        elif kind == "portal_found":
+            self._set_busy(False, "")
+            detected = msg[1]
+            if detected.best:
+                self._setup_discovery = detected
+                self.var_portal.set(detected.portal)
+                self.combo_provider.set(next(label for label, code in self.provider_map.items() if code == detected.best))
+                message = "已获取登录地址。点击保存后生效。"
+                self.lbl_portal_hint.configure(text=message)
+                self._feedback(message, "ok")
+            else:
+                message = "未找到可识别的登录页面。已联网时可能不会跳转；可在未认证时重试，或取消自动获取并手动填写。"
+                self.lbl_portal_hint.configure(text=message)
+                self._feedback(message, "warn")
         elif kind == "prefill":
             if msg[1].get("ssid") and not self.var_ssid.get():
                 self.var_ssid.set(msg[1]["ssid"])
@@ -801,7 +853,8 @@ class App:
             btn.configure(state=state)
         for widget in self._setup_inputs:
             widget.configure(state="disabled" if busy else
-                             ("readonly" if widget is self.var_carrier_widget else "normal"))
+                             ("readonly" if widget in (self.var_carrier_widget, self.combo_provider) else "normal"))
+        self._portal_mode_changed()
         if busy:
             self.progress.pack(fill="x", pady=(self._px(6), 0))
             self.progress.start(12)
@@ -843,7 +896,7 @@ class App:
 
     # ------------------------------------------------------------ 后台任务
     def _job_state(self, revision=None) -> None:
-        cfg = self.cfg
+        cfg = self._fresh_cfg()
         password = cfg.resolve_password(prompt=False)
         installed = autostart.status().startswith("已安装")
         if installed and getattr(sys, "frozen", False) and "-m campusnet" in autostart.status():
@@ -851,7 +904,7 @@ class App:
             installed = autostart.status().startswith("已安装")
         data = {
             "online": None, "detail": "", "username": cfg.username or "未设置",
-            "carrier": "未设置", "portal": cfg.portal_ip or "自动探测",
+            "carrier": "未设置", "portal": ("自动获取 · " if cfg.automatic_portal and cfg.portal_ip else "") + (cfg.portal_ip or "自动获取（连接校园网后识别）"),
             "autostart": installed, "configured": bool(cfg.username and password),
             "policy": policy.describe(self._disk_options()), "display_password": password,
             "watch_running": singleton.windows_watch_running(),
@@ -916,7 +969,7 @@ class App:
         self.q.put(("autostart_done", "已关闭登录自启。" if installed else "已开启登录自启，登录 Windows 后将进入托盘。"))
 
     def _job_save_setup(self, username: str, password: str, carrier_code: str,
-                        ssid: str, want_autostart: bool, connect_after: bool = False) -> None:
+                        ssid: str, want_autostart: bool, connect_after: bool = False, portal_settings=None) -> None:
         previous = self._fresh_cfg()
         cfg = Config.from_dict(previous.to_dict(include_password=True), path=previous.path)
         cfg.password_source = previous.password_source
@@ -929,6 +982,8 @@ class App:
         cfg.username = username
         cfg.options["carrier"] = carrier_code
         cfg.wifi_ssid = ssid
+        if portal_settings is not None:
+            cfg.portal_mode, cfg.portal_ip, cfg.provider, cfg.discovered_options = portal_settings
         try:
             cfg.save()
         except OSError as exc:
@@ -988,8 +1043,21 @@ class App:
             password = ""  # 查看已有密码或只改其他设置时，沿用现有凭据。
         ssid = self.var_ssid.get().strip()
         carrier_code = self.carrier_map.get(self.var_carrier_widget.get(), "campus")
+        if self.var_auto_portal.get():
+            detected = self._setup_discovery
+            portal_settings = ("auto", detected.portal if detected else self.cfg.portal_ip,
+                               detected.best if detected else self.cfg.provider,
+                               dict(detected.notes) if detected else dict(self.cfg.discovered_options))
+        else:
+            from .detector import normalize_portal
+            address = normalize_portal(self.var_portal.get())
+            provider = self.provider_map.get(self.combo_provider.get())
+            if not address or not provider:
+                self.lbl_setup_error.configure(text="请填写有效的 HTTP/HTTPS 登录地址，并选择认证方式。")
+                return
+            portal_settings = ("manual", address, provider, {})
         self._start_action(self._job_save_setup, "正在保存账号设置…", username,
-                           password, carrier_code, ssid, self.var_autostart.get(), connect_after)
+                           password, carrier_code, ssid, self.var_autostart.get(), connect_after, portal_settings)
         # 保存线程完成后会发 "saved" 消息，由它切回主界面并自动连接一次
 
     # ------------------------------------------------------------ 结果呈现

@@ -13,10 +13,15 @@ from __future__ import annotations
 import platform
 import re
 import subprocess
+import time
+from html import unescape
+from html.parser import HTMLParser
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 
 from .config import Config
+from . import carrier
 from .procflags import no_window_kwargs
 from .providers import DetectContext, fingerprint, rank
 from .session import HttpError, Response, Session, origin
@@ -61,7 +66,7 @@ class Detection:
     server: str = ""
     title: str = ""
     scores: List[Tuple[str, float]] = field(default_factory=list)
-    notes: Dict[str, str] = field(default_factory=dict)
+    notes: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def best(self) -> str:
@@ -86,8 +91,8 @@ def check_online(session: Session, portal_hint: str = "") -> NetStatus:
             status.detail = str(exc)
             continue
 
-        location = resp.location
-        if location and location.startswith("http"):
+        location = redirect_target(resp, url)
+        if location:
             status.portal_url = location
         elif not hijack_ok and _looks_like_portal(resp):
             status.portal_url = resp.url
@@ -111,7 +116,10 @@ def check_online(session: Session, portal_hint: str = "") -> NetStatus:
             resp = session.get(url, timeout=5)
         except HttpError:
             continue
-        if resp.status == 200 and not resp.location and marker in resp.text.lower():
+        target = redirect_target(resp, url)
+        if target:
+            status.portal_url = target
+        if resp.status == 200 and not target and marker in resp.text.lower():
             status.online = True
             status.detail = ""
             return status
@@ -139,7 +147,7 @@ def default_gateway() -> str:
     """
     system = platform.system()
     if system == "Windows":
-        commands = [["ipconfig"]]
+        commands = [["ipconfig"], ["route", "print", "-4"]]
     elif system == "Darwin":
         commands = [["netstat", "-rn"]]
     else:
@@ -149,6 +157,7 @@ def default_gateway() -> str:
         try:
             completed = subprocess.run(
                 command, capture_output=True, text=True, timeout=4, errors="replace",
+                encoding="oem" if system == "Windows" else "utf-8",
                 **no_window_kwargs(),
             )
             output = completed.stdout or ""
@@ -171,8 +180,12 @@ def _parse_gateway(text: str) -> str:
                 return match.group(1)
     for line in (text or "").splitlines():
         parts = line.split()
-        if len(parts) >= 3 and parts[0] == "0.0.0.0" and _is_ipv4(parts[1]):
-            return parts[1]
+        if len(parts) >= 3 and parts[0] == "0.0.0.0":
+            gateway = parts[2] if parts[1] == "0.0.0.0" else parts[1]
+            if _is_ipv4(gateway) and gateway != "0.0.0.0":
+                return gateway
+        if len(parts) >= 3 and parts[:2] == ["default", "via"] and _is_ipv4(parts[2]):
+            return parts[2]
         if len(parts) >= 2 and parts[0] == "default" and _is_ipv4(parts[1]):
             return parts[1]
     return ""
@@ -185,9 +198,82 @@ def _is_ipv4(text: str) -> bool:
     return all(part.isdigit() and 0 <= int(part) <= 255 for part in parts)
 
 
+def normalize_portal(value: str, base: str = "") -> str:
+    """Keep the portal path/query; accept only usable HTTP(S) URLs without credentials."""
+    value = unescape((value or "").strip()).replace("\\/", "/")
+    if not value or re.search(r"[\x00-\x20\\]", value):
+        return ""
+    if base:
+        value = urljoin(base, value)
+    elif "://" not in value:
+        value = "http://" + value
+    try:
+        parts = urlsplit(value)
+        if (parts.scheme.lower() not in ("http", "https") or not parts.hostname
+                or parts.username is not None or parts.password is not None):
+            return ""
+        _ = parts.port
+        return urlunsplit((parts.scheme.lower(), parts.netloc, parts.path or "/", parts.query, ""))
+    except ValueError:
+        return ""
+
+
+class _Page(HTMLParser):
+    def __init__(self, text: str):
+        super().__init__(convert_charrefs=True)
+        self.refresh = ""
+        self.scripts = []
+        self.ac_id = ""
+        self.domains = {}
+        self.option = ""
+        self.feed(text[:262144])
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "meta" and (attrs.get("http-equiv") or "").lower() == "refresh":
+            self.refresh = attrs.get("content") or ""
+        if tag == "script" and attrs.get("src"):
+            self.scripts.append(attrs["src"])
+        if tag == "input" and attrs.get("name", attrs.get("id")) == "ac_id":
+            self.ac_id = attrs.get("value") or ""
+        if tag == "option":
+            self.option = attrs.get("value") or ""
+
+    def handle_data(self, data):
+        if self.option.startswith("@") and re.fullmatch(r"@[\w.-]{1,64}", self.option):
+            code = carrier.normalize(data.strip())
+            if code in ("cmcc", "telecom", "unicom"):
+                self.domains[code] = self.option[1:]
+
+    def handle_endtag(self, tag):
+        if tag == "option":
+            self.option = ""
+
+
+def redirect_target(resp: Response, requested_url: str = "") -> str:
+    base = resp.url or requested_url
+    if 300 <= resp.status < 400 and resp.location:
+        return normalize_portal(resp.location, base)
+    if resp.status != 200:
+        return ""
+    text = resp.text[:262144]
+    refresh = resp.headers.get("refresh", "") or _Page(text).refresh
+    match = re.search(r"url\s*=\s*['\"]?([^'\"]+)", refresh, re.I)
+    if match:
+        return normalize_portal(match.group(1), base)
+    # Read only literal redirect targets. Never execute JavaScript from a portal.
+    match = re.search(r"(?:\b(?:window|top|self)\.)?\blocation(?:\.href)?\s*=\s*(['\"])(.*?)\1\s*(?:;|$|<)", text, re.I)
+    if not match:
+        match = re.search(r"\blocation\.(?:replace|assign)\(\s*(['\"])(.*?)\1\s*\)", text, re.I)
+    return normalize_portal(match.group(2), base) if match else ""
+
+
 def portal_candidates(cfg: Config, status: NetStatus) -> List[str]:
     """门户地址候选，按可能性排序。"""
     raw: List[str] = []
+    if not cfg.automatic_portal and cfg.portal_ip:
+        address = normalize_portal(cfg.portal_ip)
+        return [address] if address else []
     if status.portal_url:
         raw.append(status.portal_url)
     if cfg.portal_ip:
@@ -198,7 +284,7 @@ def portal_candidates(cfg: Config, status: NetStatus) -> List[str]:
 
     seen: List[str] = []
     for item in raw:
-        base = origin(item)
+        base = normalize_portal(item)
         if base and base not in seen:
             seen.append(base)
     return seen
@@ -206,44 +292,64 @@ def portal_candidates(cfg: Config, status: NetStatus) -> List[str]:
 
 # -------------------------------------------------------------------- 探测识别
 def detect(session: Session, cfg: Config, status: Optional[NetStatus] = None) -> Detection:
-    """探测门户页面并做指纹识别。"""
+    """Follow bounded portal redirects, then identify the page without sending credentials."""
     status = status or check_online(session, _hint(cfg))
     result = Detection()
 
+    visited = set()
+    deadline = time.monotonic() + 30
     for candidate in portal_candidates(cfg, status):
-        try:
-            resp = session.get(candidate + "/", timeout=cfg.timeout)
-        except HttpError:
-            continue
-        if resp.status >= 500:
-            continue
-
-        ctx = DetectContext(url=candidate + "/", response=resp, text=resp.text, headers=resp.headers)
-        # 302/307 的 Location 往往才是真正带参数的门户地址
-        # （形如 portal/login?wlan_user_ip=...&jsVersion=...）—— 那串参数是
-        # 最强的指纹，丢了它新版门户就认不出来了。只补同源的，别把别的
-        # 候选的地址串门串进来。
-        redirect = status.portal_url or ""
-        if redirect and origin(redirect) == origin(candidate + "/"):
-            ctx.url = redirect
-            ctx.text = (resp.text or "") + "\n" + redirect
-
-        scores = fingerprint(ctx)
-
-        result.portal = candidate + "/"
-        result.status = resp.status
-        result.server = resp.server
-        result.title = _title(resp.text)
-        result.scores = scores
-        result.notes = {
-            "ac_id": _find(r"ac_id\s*[=:]\s*['\"]?(\d+)", resp.text),
-            "ssid": _find(r"\bssid\s*[=:]\s*['\"]?([\w\-\.]+)", resp.text),
-            "vlan": _find(r"vlanid?\s*[=:]\s*['\"]?(\d+)", resp.text),
-            "client_ip": _find(r"(?:v46ip|ss5|wlanuserip)\s*[=:]\s*['\"]?(\d+\.\d+\.\d+\.\d+)", resp.text),
-            "portal_ip": _find(r"v4serip\s*[=:]\s*['\"]?(\d+\.\d+\.\d+\.\d+)", resp.text),
-        }
-        if scores:
-            break
+        for _hop in range(6):
+            if candidate in visited or len(visited) >= 12 or time.monotonic() >= deadline:
+                break
+            visited.add(candidate)
+            try:
+                resp = session.get(candidate, timeout=min(cfg.timeout, 4))
+            except HttpError:
+                break
+            target = redirect_target(resp, candidate)
+            if target:
+                candidate = target
+                continue
+            if resp.status != 200:
+                break
+            page_url = normalize_portal(resp.url or candidate)
+            text = resp.text[:262144]
+            page = _Page(text)
+            # Vendor code may hold the identifying endpoints and access-controller ID.
+            scripts = sorted(page.scripts, key=lambda s: not re.search(r"srun|portal|login|config", s, re.I))
+            for src in scripts[:3]:
+                url = normalize_portal(src, page_url)
+                if (not url or origin(url) != origin(page_url) or url in visited
+                        or len(visited) >= 12 or time.monotonic() >= deadline):
+                    continue
+                visited.add(url)
+                try:
+                    script = session.get(url, timeout=min(cfg.timeout, 3))
+                    if script.status == 200:
+                        text += "\n" + script.text[:262144]
+                except HttpError:
+                    continue
+            scores = fingerprint(DetectContext(page_url, resp, text, resp.headers))
+            if not scores:
+                break
+            query = parse_qs(urlsplit(page_url).query)
+            acid = query.get("ac_id", [""])[0] or page.ac_id or _find(r"ac_id\s*[=:]\s*['\"]?(\d+)", text)
+            notes = {
+                "ac_id": acid if acid.isdigit() else "",
+                "ssid": _find(r"\bssid\s*[=:]\s*['\"]?([\w\-\.]+)", text),
+                "vlan": _find(r"vlanid?\s*[=:]\s*['\"]?(\d+)", text),
+                "client_ip": _find(r"(?:v46ip|ss5|wlanuserip)\s*[=:]\s*['\"]?(\d+\.\d+\.\d+\.\d+)", text),
+                "portal_ip": _find(r"v4serip\s*[=:]\s*['\"]?(\d+\.\d+\.\d+\.\d+)", text),
+            }
+            if page.domains and scores[0][0] == "srun":
+                notes["srun_domains"] = page.domains
+            for key, endpoint in (("srun_login_path", "srun_portal"), ("srun_challenge_path", "get_challenge"),
+                                  ("srun_status_path", "rad_user_info")):
+                path = _find(r"['\"](/[\w/-]*cgi-bin/" + endpoint + r")[?'\"]", text)
+                if path:
+                    notes[key] = path
+            return Detection(page_url, resp.status, resp.server, _title(resp.text), scores, notes)
 
     return result
 
@@ -265,8 +371,10 @@ def _find(pattern: str, text: str) -> str:
 
 def provider_order(cfg: Config, detection: Detection, limit: int = 3) -> List[str]:
     """决定这次要按什么顺序尝试 provider。"""
-    if cfg.provider and cfg.provider != "auto":
+    if not cfg.automatic_portal and cfg.provider and cfg.provider != "auto":
         return [cfg.provider]
+    if cfg.automatic_portal:
+        return detection.order(limit)
     order = detection.order(limit) or rank(
         DetectContext(url=detection.portal, text=""), limit=limit
     )

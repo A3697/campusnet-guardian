@@ -85,6 +85,11 @@ class Response:
         return "<Response {} len={} url={}>".format(self.status, len(self.body), self.url)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class Session:
     """带连接复用与重试的简易会话。
 
@@ -105,15 +110,20 @@ class Session:
         self.retries = max(0, retries)
         self.logger = logger or (lambda *a, **k: None)
 
-        handlers = []
-        if not use_proxy:
-            handlers.append(urllib.request.ProxyHandler({}))
-        if not verify_tls:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            handlers.append(urllib.request.HTTPSHandler(context=ctx))
-        self._opener = urllib.request.build_opener(*handlers)
+        def handlers():
+            result = []
+            if not use_proxy:
+                result.append(urllib.request.ProxyHandler({}))
+            if not verify_tls:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                result.append(urllib.request.HTTPSHandler(context=ctx))
+            return result
+
+        # Each handler belongs to one opener; sharing them changes its parent.
+        self._redirect_opener = urllib.request.build_opener(*handlers())
+        self._opener = urllib.request.build_opener(*handlers(), _NoRedirect())
 
     # ---------------------------------------------------------------- 请求
     def request(
@@ -143,7 +153,8 @@ class Session:
             try:
                 self.logger("  → {} {}".format(method, _log_url(url)))
                 req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
-                resp = self._opener.open(req, timeout=timeout or self.timeout)
+                opener = self._redirect_opener if allow_redirects else self._opener
+                resp = opener.open(req, timeout=timeout or self.timeout)
             except urllib.error.HTTPError as exc:
                 # HTTP 错误码也是有效响应（门户常靠 3xx/4xx 表达状态）
                 resp = exc
@@ -155,7 +166,8 @@ class Session:
 
             raw = self._read(resp)
             status = getattr(resp, "status", None) or getattr(resp, "code", 0)
-            result = Response(status, dict(resp.headers.items()), raw, url)
+            result = Response(status, dict(resp.headers.items()), raw,
+                              resp.geturl() if hasattr(resp, "geturl") else url)
             self.logger("  ← {} {} ({} bytes)".format(status, _log_url(url), len(raw)))
             return result
 

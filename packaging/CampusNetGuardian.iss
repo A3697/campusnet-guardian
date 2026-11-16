@@ -1,5 +1,5 @@
 #define AppName "校园网连接守护"
-#define AppVersion "0.1.2+desktop.20261104.3"
+#define AppVersion "0.1.3+desktop.20261116.1"
 #define AppExe "校园网连接守护.exe"
 
 [Setup]
@@ -10,8 +10,8 @@ AppVerName={#AppName} {#AppVersion}
 AppPublisher=demo133 / campusnet contributors
 AppPublisherURL=https://github.com/demo133/campusnet
 AppSupportURL=https://github.com/A3697/campusnet-guardian
-VersionInfoVersion=0.1.2.3
-VersionInfoProductVersion=0.1.2.3
+VersionInfoVersion=0.1.3.1
+VersionInfoProductVersion=0.1.3.1
 VersionInfoProductTextVersion={#AppVersion}
 VersionInfoDescription={#AppName} 安装程序
 VersionInfoCopyright=Copyright (c) 2026 campusnet contributors
@@ -32,7 +32,7 @@ UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 UninstallFilesDir={app}
 OutputDir=output
-OutputBaseFilename=校园网连接守护-20261104.3-安装包
+OutputBaseFilename=校园网连接守护-20261116.1-安装包
 Compression=lzma2
 SolidCompression=yes
 CloseApplications=no
@@ -65,9 +65,6 @@ Source: "payload\default-config.json"; DestDir: "{app}\profile"; DestName: "conf
 Name: "{userdesktop}\工具\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Tasks: desktopicon
 Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Tasks: startmenuicon
 
-[Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "campusnet"; ValueData: """{app}\{#AppExe}"" watch --config ""{app}\profile\config.json"" --desktop-startup"; Tasks: startup
-
 [Run]
 Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Description: "打开{#AppName}"; Flags: nowait postinstall skipifsilent
 
@@ -75,6 +72,9 @@ Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Description: "打开{#AppName}
 const
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
   ApprovedKey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run';
+
+var
+  StartupWarning: String;
 
 function DefaultInstallDir(Param: String): String;
 begin
@@ -165,14 +165,45 @@ begin
   Result := StopInstalledApp;
 end;
 
+procedure RegisterStartup;
+var
+  Existing, Expected, Plain, Current: String;
+  Ready: Boolean;
+begin
+  Expected := ExpandConstant('"{app}\{#AppExe}" watch --config "{app}\profile\config.json" --desktop-startup');
+  Plain := ExpandConstant('{app}\{#AppExe} watch --config {app}\profile\config.json --desktop-startup');
+  Ready := False;
+  if RegQueryStringValue(HKCU, RunKey, 'campusnet', Existing) then
+    Ready := (CompareText(Trim(Existing), Expected) = 0) or (CompareText(Trim(Existing), Plain) = 0);
+  if Ready then
+    Log('Existing startup command is current; kept without rewriting.')
+  else if RegWriteStringValue(HKCU, RunKey, 'campusnet', Expected) then begin
+    if RegQueryStringValue(HKCU, RunKey, 'campusnet', Current) then
+      Ready := CompareText(Current, Expected) = 0;
+  end;
+  if Ready then
+    RegDeleteValue(HKCU, ApprovedKey, 'campusnet')
+  else begin
+    StartupWarning := '程序已安装，但系统未允许登记自动启动。请打开应用查看自启状态，并在系统允许后点击“开启自启”。';
+    Log('Startup registration was blocked. Program installation completed; existing registration kept.');
+    Log(StartupWarning);
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then begin
     if not WizardIsTaskSelected('startup') then
       RemoveOwnedStartup
-    else if OwnsStartupEntry then
-      RegDeleteValue(HKCU, ApprovedKey, 'campusnet');
+    else
+      RegisterStartup;
   end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpFinished) and (StartupWarning <> '') then
+    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 + StartupWarning;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

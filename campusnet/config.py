@@ -59,6 +59,8 @@ class Config:
     password: str = ""
     provider: str = "auto"
     portal_ip: str = ""
+    portal_mode: str = ""
+    discovered_options: Dict[str, Any] = field(default_factory=dict)
     wifi_ssid: str = ""
     verify_url: str = "http://connect.rom.miui.com/generate_204"
     timeout: int = 8
@@ -73,6 +75,8 @@ class Config:
         "password",
         "provider",
         "portal_ip",
+        "portal_mode",
+        "discovered_options",
         "wifi_ssid",
         "verify_url",
         "timeout",
@@ -87,7 +91,14 @@ class Config:
             if key in data and data[key] is not None:
                 setattr(cfg, key, data[key])
         cfg.options = dict(cfg.options or {})
+        cfg.discovered_options = dict(cfg.discovered_options or {})
         return cfg
+
+    @property
+    def automatic_portal(self) -> bool:
+        if self.portal_mode:
+            return self.portal_mode == "auto"
+        return not (self.provider and self.provider != "auto" and self.portal_ip)
 
     def to_dict(self, include_password: bool = False) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -110,8 +121,10 @@ class Config:
                     data = json.load(fh)
                 except ValueError as exc:
                     raise ValueError("配置文件不是合法 JSON：{}（{}）".format(path, exc)) from exc
-        if managed and (not data.get("provider") or data.get("provider") == "auto" or not data.get("portal_ip")):
-            raise ValueError("桌面配置缺少固定认证协议或门户，请检查 {}".format(path))
+        if managed and not data.get("portal_mode"):
+            # Earlier desktop releases pinned a school. Keep that address as a hint,
+            # but discover the current network before submitting any credentials.
+            data["portal_mode"] = "auto"
         cfg = cls.from_dict(data, path=path)
         # An installed desktop profile is authoritative regardless of its launcher's environment.
         if not managed:

@@ -10,7 +10,7 @@ from . import policy
 from .config import Config
 from .detector import Detection, NetStatus, check_online, detect, portal_candidates, provider_order
 from .providers import LoginResult, get_provider
-from .session import Session, local_ip, local_mac
+from .session import Session, local_ip, local_mac, origin
 from .wifi import WifiResult, ensure_wifi
 
 LEVELS = ("debug", "info", "ok", "warn", "error")
@@ -38,6 +38,8 @@ class Runner:
         self.cfg = cfg
         self.log = logger or _null_log
         self._session: Optional[Session] = None
+        self._active_portal = None
+        self._detected = None
         self.follow_saved_config = False
         #: 等 Wi-Fi 关联的超时（秒）。命令行可覆盖。
         self.wifi_timeout: float = float(cfg.options.get("wifi_timeout", 30))
@@ -65,6 +67,24 @@ class Runner:
 
     # ------------------------------------------------------------ 探测
     def status(self) -> NetStatus:
+        if self.cfg.automatic_portal:
+            status = check_online(self.session)
+            provider, portal, options = self._active_portal or (
+                self.cfg.provider, self.cfg.portal_ip, self._portal_options(self.cfg.discovered_options))
+            # A new install may be able to access public probe sites before the
+            # campus account is authenticated. Inspect the gateway in that case.
+            if not portal and self.cfg.username:
+                self._detected = self.detect(status)
+                if self._detected.best:
+                    provider, portal = self._detected.best, self._detected.portal
+                    options = self._portal_options(self._detected.notes)
+            if provider == "srun" and portal:
+                from .providers.srun import SrunProvider
+                state = SrunProvider(self.session, options).online_state(portal, self.cfg.username)
+                if state is not True:
+                    return NetStatus(False, status.portal_url or portal,
+                                     detail="校园网门户报告未认证" if state is False else "无法核实校园网门户会话")
+            return status
         hint = self.cfg.portal_ip and (self.cfg.portal_ip if "//" in self.cfg.portal_ip
                                        else "http://" + self.cfg.portal_ip + "/")
         if self.cfg.provider == "srun" and hint:
@@ -77,13 +97,47 @@ class Runner:
                 return NetStatus(online=False, portal_url=hint, detail="无法核实校园网门户会话")
         return check_online(self.session, hint or "")
 
+    def _portal_options(self, discovered) -> dict:
+        options = dict(self.cfg.options)
+        if self.cfg.automatic_portal:
+            options.pop("ac_id", None)
+            options.update({key: value for key, value in discovered.items() if value and
+                            key in ("ac_id", "srun_login_path", "srun_challenge_path", "srun_status_path", "srun_domains")})
+        return options
+
+    def _verify_login_status(self, provider, portal, options):
+        self._active_portal = (provider, portal, options)
+        try:
+            return self.status()
+        finally:
+            self._active_portal = None
+
+    def _remember_portal(self, detection: Detection, provider: str) -> None:
+        if not self.cfg.automatic_portal:
+            return
+        discovered = {k: v for k, v in detection.notes.items() if v and
+                      k in ("ac_id", "srun_login_path", "srun_challenge_path", "srun_status_path", "srun_domains")}
+        self.cfg.portal_ip, self.cfg.provider = detection.portal, provider
+        self.cfg.portal_mode, self.cfg.discovered_options = "auto", discovered
+        if not self.cfg.path:
+            return
+        try:
+            fresh = Config.load(self.cfg.path)
+            if not fresh.automatic_portal or fresh.username != self.cfg.username:
+                return
+            fresh.portal_mode, fresh.portal_ip, fresh.provider = "auto", detection.portal, provider
+            fresh.discovered_options = discovered
+            fresh.save(include_password=bool(fresh.password))
+        except (OSError, ValueError):
+            self.log("本次认证成功，但登录地址未能保存；下次会重新获取。", "warn")
+
     def detect(self, status: Optional[NetStatus] = None) -> Detection:
         detection = detect(self.session, self.cfg, status)
         if detection.scores:
             self.log("识别到认证系统：{}（置信度 {:.2f}）".format(
                 detection.best, detection.scores[0][1]), "ok")
         else:
-            self.log("未能识别门户类型，将按通用顺序尝试", "warn")
+            self.log("未能识别校园网登录页面，请连接校园网后重试，或在账号设置中手动填写。", "warn")
         return detection
 
     # ------------------------------------------------------------ Wi-Fi
@@ -139,6 +193,8 @@ class Runner:
         """
         cfg = self.cfg
 
+        self._detected = None
+
         # 先抢 Wi-Fi，再判联网 —— 顺序不能反，理由见 ensure_wifi 的注释。
         if not wifi_checked:
             self.ensure_wifi(patient=patient)
@@ -159,12 +215,14 @@ class Runner:
                              message="没有取到密码。请设置 CAMPUSNET_PASSWORD 环境变量，或用 campusnet setup 配置",
                              status_before=status)
 
-        if cfg.provider and cfg.provider != "auto" and cfg.portal_ip:
+        if not cfg.automatic_portal and cfg.provider and cfg.provider != "auto" and cfg.portal_ip:
             # A captive redirect or the default gateway must never displace an explicitly paired portal and provider.
-            from .session import origin
-            detection = Detection(portal=origin(cfg.portal_ip) + "/")
+            detection = Detection(portal=cfg.portal_ip if "://" in cfg.portal_ip else "http://" + cfg.portal_ip)
         else:
-            detection = self.detect(status)
+            detection = self._detected or self.detect(status)
+        if cfg.automatic_portal and not detection.best:
+            return RunResult(ok=False, message="未能自动获取校园网登录地址。请确认已连接校园网，或在账号设置中选择手动填写。",
+                             status_before=status, detection=detection)
         portal = detection.portal or (portal_candidates(cfg, status) or [""])[0]
         if not portal:
             return RunResult(ok=False, message="找不到认证门户地址，请用 --portal 指定或写入配置",
@@ -178,8 +236,9 @@ class Runner:
         attempts: List[LoginResult] = []
 
         for name in order:
+            options = self._portal_options(detection.notes)
             try:
-                provider = get_provider(name)(self.session, cfg.options)
+                provider = get_provider(name)(self.session, options)
             except KeyError as exc:
                 self.log(str(exc), "error")
                 continue
@@ -191,8 +250,8 @@ class Runner:
             attempts.append(result)
             self.log(result.short(), "ok" if result.ok else "warn")
 
-            verify_session = name == "srun" and bool(cfg.options.get("verify_srun_session"))
-            if result.already_online and not verify_session:
+            verify_session = name == "srun" and (cfg.automatic_portal or bool(cfg.options.get("verify_srun_session")))
+            if result.already_online and not verify_session and not cfg.automatic_portal:
                 return RunResult(ok=True, provider=name, message=result.message,
                                  status_before=status, detection=detection, attempts=attempts)
 
@@ -202,15 +261,16 @@ class Runner:
                 continue
 
             # 接口说成功还不够，必须联网校验通过
-            if force and status.online and not verify_session:
+            if force and status.online and not verify_session and not cfg.automatic_portal:
                 return RunResult(ok=True, provider=name, message=result.message,
                                  status_before=status, detection=detection, attempts=attempts)
 
             wait = float(cfg.options.get("verify_delay", 2))
             if wait:
                 time.sleep(wait)
-            after = self.status()
+            after = self._verify_login_status(name, portal, options)
             if after.online:
+                self._remember_portal(detection, name)
                 message = ("门户返回已在线，已核实网络可用" if result.already_online
                            else "认证成功，网络已连通")
                 return RunResult(ok=True, provider=name, message=message,

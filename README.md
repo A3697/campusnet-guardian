@@ -6,24 +6,31 @@
 
 ## 下载与安装
 
-**[下载 Windows 安装包](https://github.com/A3697/campusnet-guardian/raw/refs/heads/main/downloads/CampusNetGuardian-20261104.3-Setup.exe)** · [SHA-256 校验值](downloads/SHA256.txt)
+**[下载 Windows 安装包](https://github.com/A3697/campusnet-guardian/raw/refs/heads/main/downloads/CampusNetGuardian-20261116.1-Setup.exe)** · [SHA-256 校验值](downloads/SHA256.txt)
 
-- 版本：`0.1.2+desktop.20261104.3`
+- 版本：`0.1.3+desktop.20261116.1`
 - 系统：Windows 10 / 11，64 位
 - 默认安装目录：`D:\campusnet`
 - 安装包内置运行环境，不需要另行安装 Python。
 
-本版本针对作者学校的登录进行了适配，尚未验证其他学校的门户。
+本版本默认自动获取当前校园网的登录地址和认证方式，不再预设某所学校的地址。支持识别深澜 Srun、Dr.COM、锐捷等已适配的认证页面；其他学校是否可用，仍取决于其认证方式和页面结构。
 
 1. 双击安装包，按中文向导完成安装。安装目录可以修改。
 2. 打开应用，填写自己的上网账号和密码，选择运营商。
 3. 插好校园网线，或连接校园 Wi-Fi，然后点击“保存并连接”。
 4. 如需开机后自动登录校园网，保留“登录 Windows 后自动运行”选项。
 
+“账号设置”中默认勾选“自动获取登录地址和认证方式”。认证前，应用会检查当前网络的跳转页面，保留地址中的端口、路径和参数，并读取页面提供的认证参数。成功登录后会记住已验证的地址；下次掉线时仍会优先检查当前网络的跳转。
+
+也可以点击“获取登录地址”查看识别结果，保存后生效。如果学校使用的页面无法识别，可取消自动获取，手动填写登录地址并选择认证方式。已联网时，学校可能不再跳转到认证页面；防火墙拦截页面、验证码或扫码认证也可能使自动登录无法完成。
+
 安装包不包含个人账号、密码或运行日志。已有版本可以安装到原目录，原有账号和重连设置会保留。安装前请先保存正在编辑的设置。
+
+如果系统拦截自启项登记，安装仍会完成，并在完成页提示。可打开应用查看自启状态，在系统允许后点击“开启自启”；覆盖安装会保留已经正确登记的自启命令。
 
 ## 主要功能
 
+- 自动获取登录地址、认证方式及页面提供的参数，保留手动设置方式。
 - 登录 Windows 后启动托盘和后台，立即检查校园网会话并尝试认证。
 - 定时检查网络，掉线后等待一段时间再尝试重连。
 - 暂停或恢复自动重连，按小时和分钟分别设置自动重连时段，支持多个时段和跨午夜时段。
@@ -51,9 +58,9 @@
 
 ## 验证情况
 
-本版本的主程序已通过 326 项自动化测试；另有 1 项仅适用于 POSIX 文件权限的测试在 Windows 上跳过。安装包另行验证了首次安装、中文及带空格的路径、界面启动、覆盖安装、配置保留、快捷方式、自启项登记和卸载。
+本版本已通过自动化回归和本地模拟认证测试，覆盖登录跳转、参数读取、地址失效后的重新识别、手动设置和重复登录检查。具体结果见 [更新记录](RELEASE_NOTES.md)。
 
-本次打包使用已经验收的主程序，未修改认证代码。本次安装包验收未重新注销真实校园网，也未进行 Windows 重启测试。安装包尚未使用商业代码签名证书签名。
+本次未注销真实校园网会话，也未进行 Windows 重启测试；未验证所有学校的认证系统。安装包尚未使用商业代码签名证书签名。
 
 ## 从源码构建
 
@@ -70,7 +77,7 @@ py -3.14 -m venv .venv
 安装包使用 [Inno Setup 7](https://jrsoftware.org/isdl.php) 构建。安装编译器后，执行：
 
 ```powershell
-.\packaging\build-installer.ps1 -Compiler 'C:\Program Files\Inno Setup 7\ISCC.exe'
+.\packaging\build-installer.ps1 -Compiler 'C:\Program Files\Inno Setup 7\ISCC.exe' -Python '.\.venv\Scripts\python.exe'
 ```
 
 安装包生成在 `packaging\output`。构建脚本只使用仓库中的空白账号模板，不会复制电脑上的个人配置。
@@ -79,6 +86,7 @@ py -3.14 -m venv .venv
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install pytest==9.2.0
+$env:PYTHONPATH = (Get-Location).Path
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 

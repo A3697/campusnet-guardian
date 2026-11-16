@@ -208,6 +208,9 @@ def _load(args) -> Config:
         cfg.provider = args.provider
     if getattr(args, "portal", None):
         cfg.portal_ip = args.portal
+        cfg.portal_mode = "manual"
+    if getattr(args, "provider", None) == "auto":
+        cfg.portal_mode = "auto"
     if getattr(args, "timeout", None):
         cfg.timeout = args.timeout
     if getattr(args, "carrier", None):

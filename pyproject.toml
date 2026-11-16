@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "campusnet"
-version = "0.1.2+desktop.20261104.3"
+version = "0.1.3+desktop.20261116.1"
 description = "Zero-dependency CLI that auto-logs-in to campus network captive portals (Dr.COM / Srun / Ruijie / Huawei eportal)"
 readme = "README.md"
 requires-python = ">=3.8"

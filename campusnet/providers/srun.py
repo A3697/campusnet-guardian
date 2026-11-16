@@ -211,13 +211,13 @@ class SrunProvider(Provider):
                 query += "&domain={}".format(quote(domain, safe=""))
             query += "&_={}".format(int(time.time() * 1000))
             try:
-                resp = self.session.get("{}/cgi-bin/srun_portal?{}".format(origin, query),
+                resp = self.session.get("{}{}?{}".format(origin, self.opt("srun_login_path", "/cgi-bin/srun_portal"), query),
                                         headers={"Referer": origin + "/"})
             except Exception as exc:  # noqa: BLE001
                 errors.append("{}：{}".format(origin, exc))
                 continue
 
-            result = self._as_result(resp, origin + "/cgi-bin/srun_portal")
+            result = self._as_result(resp, origin + self.opt("srun_login_path", "/cgi-bin/srun_portal"))
             if result.ok or result.already_online:
                 return result
             errors.append("{}：{}".format(origin, result.message))
@@ -232,8 +232,8 @@ class SrunProvider(Provider):
     # ------------------------------------------------------------ 内部
     def _get_challenge(self, origin: str, username: str, ip: str) -> Tuple[str, str]:
         for attempt in range(2):
-            url = "{}/cgi-bin/get_challenge?callback=jsonp&username={}&ip={}&_={}".format(
-                origin, quote(username, safe=""), quote(ip, safe=""), int(time.time() * 1000))
+            url = "{}{}?callback=jsonp&username={}&ip={}&_={}".format(
+                origin, self.opt("srun_challenge_path", "/cgi-bin/get_challenge"), quote(username, safe=""), quote(ip, safe=""), int(time.time() * 1000))
             resp = self.session.get(url, headers={"Referer": origin + "/", "Cache-Control": "no-cache"})
             data = self._json(resp)
             if not isinstance(data, dict):
@@ -256,7 +256,7 @@ class SrunProvider(Provider):
         """门户明确报告离线时，不能被代理可访问的公共探测点覆盖。"""
         for origin in self.origins(portal):
             try:
-                response = self.session.get(origin + "/cgi-bin/rad_user_info?callback=jsonp&_={}".format(int(time.time() * 1000)), timeout=5)
+                response = self.session.get(origin + self.opt("srun_status_path", "/cgi-bin/rad_user_info") + "?callback=jsonp&_={}".format(int(time.time() * 1000)), timeout=5)
                 data = self._json(response)
             except Exception:
                 continue
