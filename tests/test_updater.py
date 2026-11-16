@@ -6,6 +6,7 @@ import ssl
 import threading
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -143,6 +144,67 @@ def test_network_failure_preserves_installed_application(monkeypatch,tmp_path):
     with pytest.raises(updater.UpdateError,match="下载失败"):
         updater.download(info(),tmp_path/'updates')
     assert marker.read_bytes()==b"current-version"
+
+
+def test_slow_download_can_continue_beyond_five_minutes(monkeypatch,tmp_path):
+    elapsed = [0]
+    class SlowResponse(io.BytesIO):
+        def read1(self, size=-1):
+            elapsed[0] += 200
+            return super().read1(size)
+    monkeypatch.setattr(updater.time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(updater, "_open", lambda *a: SlowResponse(PAYLOAD))
+    path = updater.download(info(),tmp_path)
+    assert elapsed[0] > 300 and path.read_bytes() == PAYLOAD
+
+
+def test_total_download_timeout_removes_partial_file(monkeypatch,tmp_path):
+    elapsed = [0]
+    class ExpiredResponse(io.BytesIO):
+        def read1(self, size=-1):
+            elapsed[0] += updater.MAX_DOWNLOAD_SECONDS + 1
+            return super().read1(size)
+    monkeypatch.setattr(updater.time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(updater, "_open", lambda *a: ExpiredResponse(PAYLOAD))
+    with pytest.raises(updater.UpdateError, match="下载超时"):
+        updater.download(info(),tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cancel_responds_before_slow_server_finishes_a_chunk(monkeypatch,tmp_path):
+    release, cancel = threading.Event(), threading.Event()
+    timed_out = []
+    class SlowServer(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length",str(len(PAYLOAD)))
+            self.end_headers()
+            self.wfile.write(PAYLOAD[:2])
+            self.wfile.flush()
+            timed_out.append(not release.wait(3))
+            try:
+                self.wfile.write(PAYLOAD[2:])
+            except OSError:
+                pass
+    server = ThreadingHTTPServer(("127.0.0.1",0),SlowServer)
+    threading.Thread(target=server.serve_forever,daemon=True).start()
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    monkeypatch.setattr(updater,"_open",lambda *a: opener.open("http://127.0.0.1:" + str(server.server_port),timeout=5))
+    def progress(received,total):
+        if received:
+            cancel.set()
+            release.set()
+    try:
+        with pytest.raises(updater.DownloadCancelled):
+            updater.download(info(),tmp_path,progress,cancel)
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+    assert timed_out == [False]
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.skipif(updater.os.name!="nt",reason="Windows installer command")

@@ -22,6 +22,7 @@ APP_EXE = "校园网连接守护.exe"
 MAX_INSTALLER_SIZE = 100 * 1024 * 1024
 MAX_MANIFEST_SIZE = 64 * 1024
 CHUNK_SIZE = 256 * 1024
+MAX_DOWNLOAD_SECONDS = 30 * 60
 VERSION_PATTERN = r"(\d+)\.(\d+)\.(\d+)(?:\+desktop\.(\d{8})\.(\d+))?"
 
 
@@ -179,7 +180,7 @@ def download(info: UpdateInfo, directory: Path, progress=None, cancel=None) -> P
                 return destination
             except UpdateError:
                 _cancelled(cancel)
-        deadline = time.monotonic() + 300
+        deadline = time.monotonic() + MAX_DOWNLOAD_SECONDS
         last = None
         for url, use_proxy in _sources(info.filename):
             _cancelled(cancel)
@@ -197,7 +198,7 @@ def download(info: UpdateInfo, directory: Path, progress=None, cancel=None) -> P
                             _cancelled(cancel)
                             if time.monotonic() >= deadline:
                                 raise UpdateError("下载超时，当前版本未改变。请稍后重试。")
-                            chunk = response.read(CHUNK_SIZE)
+                            chunk = response.read1(CHUNK_SIZE)
                             if not chunk:
                                 break
                             received += len(chunk)
