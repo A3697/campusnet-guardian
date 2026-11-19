@@ -1,1 +1,1 @@
-a046e36450982cf34025d8e595e777e673d889e680e7a21399baae4aa55b2367  CampusNetGuardian-20261116.4-Setup.exe
+f1b6abb6383d6ce3aa2e95aed914c0d9e2b60f283b3a5f5389cd9801dda0dc1b  CampusNetGuardian-20261119.1-Setup.exe

@@ -150,6 +150,11 @@ class App:
         self.root.bind("<Control-Return>", self._primary_shortcut)
         self._wheel_tag = "CampusnetScroll{}".format(id(self))
         self.root.bind_class(self._wheel_tag, "<MouseWheel>", self._scroll_page)
+        import tkinter as tk
+        try:
+            self.root.bind_class(self._wheel_tag, "<TouchpadScroll>", self._scroll_touchpad)
+        except tk.TclError:
+            pass  # Tk 8 uses MouseWheel for both devices.
         self.root.bind_class(self._wheel_tag, "<FocusIn>", self._reveal_focus)
         self._install_scroll_bindings(self.root)
         self.root.after(5000, self._periodic_refresh)
@@ -734,7 +739,13 @@ class App:
         for child in parent.winfo_children():
             self._install_scroll_bindings(child)
 
-    def _scroll_page(self, event):
+    def _scroll_touchpad(self, event):
+        # Match Tk 9's standard Text/Scrollbar handling of the packed X/Y delta.
+        _dx, dy = self.root.tk.call("tk::PreciseScrollDeltas", event.delta)
+        pixels = -int(self.root.tk.call("tk::ScaleNum", dy))
+        return self._scroll_page(event, pixels=pixels)
+
+    def _scroll_page(self, event, pixels=None):
         top = event.widget.winfo_toplevel()
         if top == self.root:
             canvas = self._setup_canvas if self._page == "setup" else self._main_canvas
@@ -742,9 +753,12 @@ class App:
             canvas = self._policy_canvas
         else:
             return
-        if canvas is None or not event.delta:
+        precise = pixels is not None
+        if not precise:
+            pixels = -round(event.delta / 120 * self._px(48))
+        if canvas is None or not pixels:
             return "break"
-        direction = -1 if event.delta > 0 else 1
+        direction = -1 if pixels < 0 else 1
         canvas.update_idletasks()
         in_log = str(event.widget) == str(self.log_wrap) or str(event.widget).startswith(str(self.log_wrap) + ".")
         if canvas == self._main_canvas and in_log:
@@ -753,15 +767,17 @@ class App:
             first, last = self.log_box.yview()
             can_scroll = first > 0 if direction < 0 else last < 1
             if fully_visible and can_scroll:
-                lines = max(1, round(abs(event.delta) / 120 * 3))
-                self.log_box.yview_scroll(direction * lines, "units")
+                if precise:
+                    self.log_box.yview_scroll(pixels, "pixels")
+                else:
+                    lines = max(1, round(abs(event.delta) / 120 * 3))
+                    self.log_box.yview_scroll(direction * lines, "units")
                 return "break"
         first, last = canvas.yview()
         if (direction < 0 and first > 0) or (direction > 0 and last < 1):
-            pixels = max(1, round(abs(event.delta) / 120 * self._px(48)))
             bounds = canvas.bbox("all")
             if bounds:
-                canvas.yview_moveto(first + direction * pixels / max(1, bounds[3] - bounds[1]))
+                canvas.yview_moveto(first + pixels / max(1, bounds[3] - bounds[1]))
         return "break"
 
     def _primary_shortcut(self, _event=None):
@@ -807,8 +823,9 @@ class App:
 
         self._setup_discovery = None
         self.var_auto_portal.set(self.cfg.automatic_portal)
-        self.var_portal.set(self.cfg.portal_ip)
-        self.combo_provider.set(next((label for label, code in self.provider_map.items() if code == self.cfg.provider), ""))
+        self.var_portal.set("" if self.cfg.automatic_portal else self.cfg.portal_ip)
+        self.combo_provider.set("" if self.cfg.automatic_portal else next(
+            (label for label, code in self.provider_map.items() if code == self.cfg.provider), ""))
         self._portal_mode_changed()
 
     def _portal_mode_changed(self) -> None:
@@ -1036,7 +1053,7 @@ class App:
             installed = autostart.status().startswith("已安装")
         data = {
             "online": None, "detail": "", "username": cfg.username or "未设置",
-            "carrier": "未设置", "portal": ("自动获取 · " if cfg.automatic_portal and cfg.portal_ip else "") + (cfg.portal_ip or "自动获取（连接校园网后识别）"),
+            "carrier": "未设置", "portal": ("自动获取（每次连接重新识别）" if cfg.automatic_portal else cfg.portal_ip or "未设置"),
             "autostart": installed, "configured": bool(cfg.username and password),
             "policy": policy.describe(self._disk_options()), "display_password": password,
             "watch_running": singleton.windows_watch_running(),
@@ -1060,9 +1077,11 @@ class App:
     def _job_connect(self, force: bool) -> None:
         cfg = self._fresh_cfg()
         runner = self._runner()
-        self.q.put(("log", "使用 {} 认证，门户 {}".format(cfg.provider, cfg.portal_ip or "自动探测"), "info"))
+        message = ("正在识别当前校园网的登录地址和认证方式。" if cfg.automatic_portal
+                   else "使用 {} 认证，门户 {}".format(cfg.provider, cfg.portal_ip))
+        self.q.put(("log", message, "info"))
         result = runner.ensure_online(force=force)
-        if result.ok and result.detection and result.detection.portal and not cfg.portal_ip:
+        if not cfg.automatic_portal and result.ok and result.detection and result.detection.portal and not cfg.portal_ip:
             cfg.portal_ip = result.detection.portal
             try:
                 cfg.save()
@@ -1084,8 +1103,12 @@ class App:
         runner = Runner(cfg)
         status = runner.status()
         lines.append("网络检测  " + status.describe())
-        if cfg.portal_ip:
+        if not cfg.automatic_portal and cfg.portal_ip:
             lines.append("已配置认证门户  " + cfg.portal_ip)
+        elif cfg.automatic_portal:
+            lines.append("认证门户由当前网络自动识别，不使用上次学校的地址。")
+            if status.portal_url:
+                lines.append("当前网络的登录入口  " + status.portal_url)
         elif not status.online:
             detected = runner.detect(status)
             lines.append("检测到认证门户  " + detected.portal if detected.portal else "请检查校园网线或校园 Wi-Fi 是否已连接。")
@@ -1177,9 +1200,9 @@ class App:
         carrier_code = self.carrier_map.get(self.var_carrier_widget.get(), "campus")
         if self.var_auto_portal.get():
             detected = self._setup_discovery
-            portal_settings = ("auto", detected.portal if detected else self.cfg.portal_ip,
-                               detected.best if detected else self.cfg.provider,
-                               dict(detected.notes) if detected else dict(self.cfg.discovered_options))
+            portal_settings = ("auto", detected.portal if detected else "",
+                               detected.best if detected else "auto",
+                               dict(detected.notes) if detected else {})
         else:
             from .detector import normalize_portal
             address = normalize_portal(self.var_portal.get())
@@ -1459,6 +1482,16 @@ class App:
         ttk.Checkbutton(card, text="限定自动重连时间", variable=var_on).grid(row=6, column=0, sticky="w")
         add_time = self._button(card, "添加时间段", lambda:add_window(12*60,13*60))
         add_time.grid(row=9, column=0, sticky="w", pady=(self._px(8),0))
+        var_mac = tk.BooleanVar(value=bool(cfg.options.get("random_mac_retry")))
+        self._policy_mac = var_mac
+        ttk.Checkbutton(card, text="找不到登录入口时，使用随机 MAC 重试", variable=var_mac).grid(
+            row=10, column=0, sticky="w", pady=(self._px(22),self._px(6)))
+        self._label(card, "仅在断网且无法识别入口时使用，每 30 分钟最多一次。需要 Windows 管理员授权，"
+                    "会短暂重启当前网卡；失败后恢复原设置。网卡不支持时会跳过。",
+                    bg_=CARD, fg=MUTED, font=FONT_SMALL, justify="left", wraplength=self._px(390)).grid(
+                        row=11, column=0, sticky="ew")
+        self._button(card, "恢复原 MAC", self.restore_mac).grid(
+            row=12, column=0, sticky="w", pady=(self._px(8),0))
         self._add_policy_window = add_window
         self._remove_policy_window = remove_time
         var_on.trace_add("write", lambda *_:sync())
@@ -1498,7 +1531,7 @@ class App:
                 policy.parse_windows(text)
                 latest = self._fresh_cfg()
                 policy.set_options(latest, **{policy.KEY_INTERVAL:interval, policy.KEY_DELAY:delay,
-                                              policy.KEY_WINDOWS:text})
+                                              policy.KEY_WINDOWS:text, "random_mac_retry":var_mac.get()})
             except (ValueError, OSError) as exc:
                 error.configure(text=str(exc))
                 return
@@ -1513,6 +1546,29 @@ class App:
         win.protocol("WM_DELETE_WINDOW", close)
         win.bind("<Escape>", lambda _e: close())
         self._install_scroll_bindings(win)
+
+    def restore_mac(self) -> None:
+        if self._busy:
+            return
+        from tkinter import messagebox
+        if not messagebox.askyesno(APP_TITLE, "恢复上次修改前的 MAC 会短暂重启网卡，网络连接可能中断。\n\n现在恢复吗？",
+                                   parent=self._policy_win or self.root):
+            return
+        self._set_busy(True, "正在恢复原 MAC…")
+        self._spawn(self._job_restore_mac)
+
+    def _job_restore_mac(self) -> None:
+        from .mac_retry import request
+        result = request(self._fresh_cfg(), restore=True)
+
+        def done():
+            self._set_busy(False, "")
+            level = "ok" if result["ok"] else "error"
+            self._feedback(result["message"], level)
+            self._append_log(result["message"], level)
+            self._request_state()
+
+        self.q.put(("call", done))
 
     # ------------------------------------------------------------ 系统托盘
     def _post(self, fn) -> None:

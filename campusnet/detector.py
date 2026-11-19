@@ -147,7 +147,11 @@ def default_gateway() -> str:
     """
     system = platform.system()
     if system == "Windows":
-        commands = [["ipconfig"], ["route", "print", "-4"]]
+        from .windows_network import current_network
+        physical = current_network().get("gateway")
+        if physical:
+            return physical
+        commands = [["route", "print", "-4"], ["ipconfig"]]
     elif system == "Darwin":
         commands = [["netstat", "-rn"]]
     else:
@@ -173,6 +177,15 @@ def default_gateway() -> str:
 
 
 def _parse_gateway(text: str) -> str:
+    routes = []
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if (len(parts) >= 5 and parts[:2] == ["0.0.0.0", "0.0.0.0"]
+                and _is_ipv4(parts[2]) and _is_ipv4(parts[3]) and parts[4].isdigit()
+                and parts[2] != "0.0.0.0"):
+            routes.append((int(parts[4]), parts[2]))
+    if routes:
+        return min(routes)[1]
     for line in (text or "").splitlines():
         if "默认网关" in line or "Default Gateway" in line:
             match = re.search(r"(\d+\.\d+\.\d+\.\d+)", line)
@@ -276,8 +289,6 @@ def portal_candidates(cfg: Config, status: NetStatus) -> List[str]:
         return [address] if address else []
     if status.portal_url:
         raw.append(status.portal_url)
-    if cfg.portal_ip:
-        raw.append(cfg.portal_ip)
     gateway = default_gateway()
     if gateway:
         raw.append(gateway)
@@ -355,7 +366,7 @@ def detect(session: Session, cfg: Config, status: Optional[NetStatus] = None) ->
 
 
 def _hint(cfg: Config) -> str:
-    if not cfg.portal_ip:
+    if cfg.automatic_portal or not cfg.portal_ip:
         return ""
     return origin(cfg.portal_ip) + "/"
 

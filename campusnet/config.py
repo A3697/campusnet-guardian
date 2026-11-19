@@ -122,8 +122,8 @@ class Config:
                 except ValueError as exc:
                     raise ValueError("配置文件不是合法 JSON：{}（{}）".format(path, exc)) from exc
         if managed and not data.get("portal_mode"):
-            # Earlier desktop releases pinned a school. Keep that address as a hint,
-            # but discover the current network before submitting any credentials.
+            # Older desktop profiles pinned a school. Automatic mode retains that
+            # record for diagnostics but never uses it to contact a later network.
             data["portal_mode"] = "auto"
         cfg = cls.from_dict(data, path=path)
         # An installed desktop profile is authoritative regardless of its launcher's environment.

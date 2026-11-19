@@ -12,6 +12,7 @@
     "carrier": "campus",
     "reconnect_interval": 5,
     "reconnect_delay": 60,
+    "random_mac_retry": true,
     "verify_srun_session": true,
     "verify_portal_tls": true
   }

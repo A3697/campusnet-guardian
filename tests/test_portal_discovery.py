@@ -52,7 +52,7 @@ def test_discover_js_parameters_and_operator_suffixes(no_gateway):
     assert all(call[0] == "GET" for call in session.calls)
 
 
-def test_redirect_loop_ends_and_uses_recognized_cached_page(no_gateway):
+def test_redirect_loop_stops_without_contacting_previous_school(no_gateway):
     cache = "http://cached.example/login"
     session = FakeSession([
         ("loop.example", make_response("", 302, {"location": "http://loop.example/"}, "http://loop.example/")),
@@ -60,8 +60,9 @@ def test_redirect_loop_ends_and_uses_recognized_cached_page(no_gateway):
     ])
     cfg = Config(portal_mode="auto", provider="srun", portal_ip=cache)
     result = detect(session, cfg, NetStatus(portal_url="http://loop.example/"))
-    assert result.best == "ruijie" and result.portal == cache
-    assert len(session.calls) == 2
+    assert not result.best
+    assert len(session.calls) == 1
+    assert cache not in session.urls
 
 
 def test_current_redirect_precedes_old_school_and_preserves_parameters(no_gateway):
@@ -100,6 +101,11 @@ def test_missing_hidden_value_still_reads_access_controller_from_script(no_gatew
 def test_windows_and_linux_numeric_gateway_routes():
     assert detector._parse_gateway("0.0.0.0 0.0.0.0 10.2.0.1 10.2.1.7 25") == "10.2.0.1"
     assert detector._parse_gateway("default via 10.3.0.1 dev eth0") == "10.3.0.1"
+
+
+def test_windows_gateway_uses_best_route_metric_not_first_adapter():
+    text = "0.0.0.0 0.0.0.0 10.2.0.1 10.2.1.7 75\n0.0.0.0 0.0.0.0 10.3.0.1 10.3.1.7 10"
+    assert detector._parse_gateway(text) == "10.3.0.1"
 
 
 def test_frozen_profile_accepts_auto_and_migrates_old_desktop(monkeypatch, tmp_path):

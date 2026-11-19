@@ -238,6 +238,10 @@ def local_ip() -> str:
 
     用 UDP connect 探测（不会真的发包），比解析 ipconfig 稳。
     """
+    from .windows_network import current_network
+    physical = current_network().get("ipv4")
+    if physical:
+        return physical
     for target in (("8.8.8.8", 80), ("114.114.114.114", 53), ("10.255.255.255", 1)):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -256,6 +260,10 @@ def local_mac() -> str:
 
     注意：部分系统会返回随机化的 MAC，门户一般只把它当作辅助字段。
     """
+    from .windows_network import current_network
+    physical = current_network().get("mac")
+    if physical:
+        return physical.replace("-", "").replace(":", "").lower()
     try:
         node = uuid.getnode()
     except Exception:  # noqa: BLE001

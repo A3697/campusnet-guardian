@@ -14,6 +14,7 @@ from .session import Session, local_ip, local_mac, origin
 from .wifi import WifiResult, ensure_wifi
 
 LEVELS = ("debug", "info", "ok", "warn", "error")
+PORTAL_OPTION_KEYS = ("ac_id", "srun_login_path", "srun_challenge_path", "srun_status_path", "srun_domains")
 
 
 def _null_log(message: str, level: str = "info") -> None:
@@ -69,16 +70,17 @@ class Runner:
     def status(self) -> NetStatus:
         if self.cfg.automatic_portal:
             status = check_online(self.session)
-            provider, portal, options = self._active_portal or (
-                self.cfg.provider, self.cfg.portal_ip, self._portal_options(self.cfg.discovered_options))
-            # A new install may be able to access public probe sites before the
-            # campus account is authenticated. Inspect the gateway in that case.
-            if not portal and self.cfg.username:
+            if self._active_portal is not None:
+                provider, portal, options = self._active_portal
+            else:
+                # A saved school address says nothing about the current network.
+                # Discover again even when public probe sites are whitelisted.
                 self._detected = self.detect(status)
-                if self._detected.best:
-                    provider, portal = self._detected.best, self._detected.portal
-                    options = self._portal_options(self._detected.notes)
-            if provider == "srun" and portal:
+                provider, portal = self._detected.best, self._detected.portal
+                options = self._portal_options(self._detected.notes)
+            if portal:
+                status.portal_url = portal
+            if provider == "srun" and portal and self.cfg.username:
                 from .providers.srun import SrunProvider
                 state = SrunProvider(self.session, options).online_state(portal, self.cfg.username)
                 if state is not True:
@@ -100,9 +102,10 @@ class Runner:
     def _portal_options(self, discovered) -> dict:
         options = dict(self.cfg.options)
         if self.cfg.automatic_portal:
-            options.pop("ac_id", None)
+            for key in PORTAL_OPTION_KEYS:
+                options.pop(key, None)
             options.update({key: value for key, value in discovered.items() if value and
-                            key in ("ac_id", "srun_login_path", "srun_challenge_path", "srun_status_path", "srun_domains")})
+                            key in PORTAL_OPTION_KEYS})
         return options
 
     def _verify_login_status(self, provider, portal, options):
@@ -116,7 +119,7 @@ class Runner:
         if not self.cfg.automatic_portal:
             return
         discovered = {k: v for k, v in detection.notes.items() if v and
-                      k in ("ac_id", "srun_login_path", "srun_challenge_path", "srun_status_path", "srun_domains")}
+                      k in PORTAL_OPTION_KEYS}
         self.cfg.portal_ip, self.cfg.provider = detection.portal, provider
         self.cfg.portal_mode, self.cfg.discovered_options = "auto", discovered
         if not self.cfg.path:
@@ -185,7 +188,8 @@ class Runner:
 
     # ------------------------------------------------------------ 主流程
     def ensure_online(self, force: bool = False, limit: int = 3,
-                      patient: bool = False, wifi_checked: bool = False) -> RunResult:
+                      patient: bool = False, wifi_checked: bool = False,
+                      allow_mac_retry: bool = True) -> RunResult:
         """确认网络可用，必要时完成认证。
 
         ``wifi_checked=True`` 表示调用方**已经**做过 Wi-Fi 那一环了，
@@ -221,6 +225,12 @@ class Runner:
         else:
             detection = self._detected or self.detect(status)
         if cfg.automatic_portal and not detection.best:
+            if allow_mac_retry and not status.online and cfg.options.get("random_mac_retry"):
+                from .mac_retry import request
+                retry = request(cfg, self.log)
+                self.log(retry["message"], "ok" if retry["ok"] else "warn")
+                return RunResult(ok=retry["ok"], message=retry["message"], provider=retry.get("provider", ""),
+                                 status_before=status, detection=detection)
             return RunResult(ok=False, message="未能自动获取校园网登录地址。请确认已连接校园网，或在账号设置中选择手动填写。",
                              status_before=status, detection=detection)
         portal = detection.portal or (portal_candidates(cfg, status) or [""])[0]

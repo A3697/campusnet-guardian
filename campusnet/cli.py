@@ -1144,6 +1144,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_policy.add_argument("--windows", default=None,
                           help='定时重连时间段，如 "23:00-07:00"；传空串表示全天都重连')
 
+    def mac_worker(args):
+        from .mac_retry import worker
+        return worker(Config.load(args.config), args.task)
+
+    p_mac = add("mac-retry", "处理桌面版的 MAC 重试或恢复任务", mac_worker)
+    p_mac.add_argument("--task", required=True, help=argparse.SUPPRESS)
+
     return parser
 
 
