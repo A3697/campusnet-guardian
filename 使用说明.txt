@@ -1,4 +1,4 @@
-校园网连接守护 0.1.5+desktop.20261119.1
+校园网连接守护 0.1.5+desktop.20261119.2
 
 原项目作者：demo133 与 campusnet contributors。
 原作者主页：https://github.com/demo133

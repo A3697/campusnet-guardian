@@ -239,6 +239,33 @@ def test_server_ignoring_range_restarts_without_appending(monkeypatch,tmp_path):
     assert calls == [0,23]
 
 
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_many_partial_responses_continue_while_making_progress(monkeypatch,tmp_path,interrupted):
+    calls = []
+    part_size = len(PAYLOAD)//9
+
+    class Segment(io.BytesIO):
+        status = 206
+        def __init__(self,offset):
+            self.offset = offset
+            self.headers = {"Content-Range":"bytes {}-{}/{}".format(offset,len(PAYLOAD)-1,len(PAYLOAD))}
+            super().__init__(PAYLOAD[offset:offset+part_size])
+        def read1(self,size=-1):
+            data = super().read1(size)
+            if not data and interrupted and self.offset+self.tell()<len(PAYLOAD):
+                raise http.client.IncompleteRead(b"")
+            return data
+
+    def open_(url,proxy,offset=0):
+        calls.append(offset)
+        return Segment(offset)
+
+    monkeypatch.setattr(updater,"_sources",lambda filename:iter([("fixture",False)]))
+    monkeypatch.setattr(updater,"_open",open_)
+    assert updater.download(info(),tmp_path).read_bytes()==PAYLOAD
+    assert len(calls)>6 and all(b>a for a,b in zip(calls,calls[1:]))
+
+
 @pytest.mark.parametrize("span", ["bytes 0-9/10", "bytes 23-99/*", "bytes 24-{} /{}".format(len(PAYLOAD)-1,len(PAYLOAD)), ""])
 def test_invalid_resume_range_never_installs(monkeypatch,tmp_path,span):
     calls = []

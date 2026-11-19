@@ -6,9 +6,9 @@
 
 ## 下载与安装
 
-**[下载 Windows 安装包](https://github.com/A3697/campusnet-guardian/raw/refs/heads/main/downloads/CampusNetGuardian-20261119.1-Setup.exe)** · [SHA-256 校验值](downloads/SHA256.txt)
+**[下载 Windows 安装包](https://github.com/A3697/campusnet-guardian/raw/refs/heads/main/downloads/CampusNetGuardian-20261119.2-Setup.exe)** · [SHA-256 校验值](downloads/SHA256.txt)
 
-- 版本：`0.1.5+desktop.20261119.1`
+- 版本：`0.1.5+desktop.20261119.2`
 - 系统：Windows 10 / 11，64 位
 - 默认安装目录：`D:\campusnet`
 - 安装包内置运行环境，不需要另行安装 Python。
@@ -75,7 +75,7 @@ Windows 会要求管理员授权。允许后，应用只重启当前支持 MAC �
 
 本版本的自动化回归覆盖跨学校识别、细小触控板滚动量、MAC 重试和失败恢复等情况，并用 Windows 原生滚动消息对照了标准文本控件。具体结果见 [本次验证记录](release/TEST_RESULTS_20261119.md)。
 
-本机有线网络已验证随机 MAC 更换、重新识别入口、由安装版程序完成认证以及恢复原 MAC 和重连策略。UU 远程触控板的完整传输过程、Windows 重启及其他学校的真实网络仍需现场验证。安装包尚未使用商业代码签名证书签名。
+本机有线网络已验证随机 MAC 更换、重新识别入口、由安装版程序完成认证以及恢复原 MAC 和重连策略。用户已确认 UU 远程触控板能正常上下滚动。Windows 重启及其他学校的真实网络仍需现场验证。安装包尚未使用商业代码签名证书签名。
 
 ## 从源码构建
 

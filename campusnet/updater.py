@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from collections import deque
 
 REPOSITORY = "A3697/campusnet-guardian"
 PROJECT_URL = "https://github.com/" + REPOSITORY
@@ -193,7 +194,11 @@ def download(info: UpdateInfo, directory: Path, progress=None, cancel=None) -> P
         sources = list(_sources(info.filename))
         # Retry the last official route if its response was cut short.
         sources += sources[-1:] * 2
-        for url, use_proxy in sources:
+        pending = deque(sources)
+        progress_retries = 0
+        while pending:
+            url, use_proxy = pending.popleft()
+            started_received = received
             _cancelled(cancel)
             if time.monotonic() >= deadline:
                 break
@@ -241,6 +246,11 @@ def download(info: UpdateInfo, directory: Path, progress=None, cancel=None) -> P
                     # An oversized or corrupt complete response must never be resumed.
                     temporary.write_bytes(b"")
                     received = 0
+                elif received > started_received and progress_retries < 32:
+                    # An interrupted connection can still have delivered valid new
+                    # bytes. Keep resuming that route while it makes progress.
+                    pending.appendleft((url, use_proxy))
+                    progress_retries += 1
         if isinstance(last, UpdateError):
             raise last
         raise UpdateError("安装包下载失败，当前版本未改变。请检查网络后重试。") from last

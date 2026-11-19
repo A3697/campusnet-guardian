@@ -1,5 +1,5 @@
 #define AppName "校园网连接守护"
-#define AppVersion "0.1.5+desktop.20261119.1"
+#define AppVersion "0.1.5+desktop.20261119.2"
 #define AppExe "校园网连接守护.exe"
 #ifndef AppId
   #define AppId "CampusNetGuardian.Desktop"
@@ -13,8 +13,8 @@ AppVerName={#AppName} {#AppVersion}
 AppPublisher=demo133 / campusnet contributors
 AppPublisherURL=https://github.com/demo133/campusnet
 AppSupportURL=https://github.com/A3697/campusnet-guardian
-VersionInfoVersion=0.1.5.1
-VersionInfoProductVersion=0.1.5.1
+VersionInfoVersion=0.1.5.2
+VersionInfoProductVersion=0.1.5.2
 VersionInfoProductTextVersion={#AppVersion}
 VersionInfoDescription={#AppName} 安装程序
 VersionInfoCopyright=Copyright (c) 2026 campusnet contributors
@@ -35,7 +35,7 @@ UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 UninstallFilesDir={app}
 OutputDir=output
-OutputBaseFilename=校园网连接守护-20261119.1-安装包
+OutputBaseFilename=校园网连接守护-20261119.2-安装包
 Compression=lzma2
 SolidCompression=yes
 CloseApplications=no
