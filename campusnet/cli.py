@@ -1002,6 +1002,14 @@ def cmd_autostart(args) -> int:
 
 
 # -------------------------------------------------------------------- 解析
+def cmd_export(args) -> int:
+    from .diagnostics import export_environment
+    console = Console(verbose=getattr(args, "verbose", False))
+    result = export_environment(_load(args), args.output, progress=console)
+    console("已导出 7z 文件：{}（{:.2f} MB）".format(result.path, result.size / 1048576), "ok")
+    return 0
+
+
 def _global_options() -> argparse.ArgumentParser:
     """全局选项，供各子命令复用（``parents=``）。
 
@@ -1065,6 +1073,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_detect = add("detect", "探测门户并做指纹识别", cmd_detect)
     p_detect.add_argument("--portal", help="直接指定门户地址，跳过自动探测")
     add_option_flag(p_detect)
+
+    p_export = add("export-environment", "采集网络环境并导出脱敏的 7z 文件，不登录或修改网卡", cmd_export)
+    p_export.add_argument("--output", required=True, help="导出文件的完整路径（.7z）")
+    p_export.add_argument("--portal", help="临时指定待采集的认证页面，不保存设置")
 
     p_login = add("login", "登录一次", cmd_login)
     p_login.add_argument("--force", action="store_true", help="即使已联网也重新认证")

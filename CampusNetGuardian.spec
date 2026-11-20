@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+datas = [('third_party/7zip/7zr.exe', 'third_party/7zip')]
 binaries = []
 hiddenimports = ['keyring.backends.Windows', 'win32ctypes.core.ctypes', 'pystray._win32']
 hiddenimports += collect_submodules('keyring.backends')

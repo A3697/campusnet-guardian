@@ -23,6 +23,7 @@ def main():
     for folder in ("campusnet", "tests"):
         files.extend(sorted((root / folder).rglob("*.py")))
     files.extend(sorted((payload / "licenses").rglob("*")))
+    files.extend(sorted((root / "third_party/7zip").rglob("*")))
     with ZipFile(payload / "源码与构建.zip", "w", ZIP_DEFLATED) as archive:
         for path in files:
             if path.is_file():

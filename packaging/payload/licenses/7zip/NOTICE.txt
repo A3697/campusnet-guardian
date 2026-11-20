@@ -1,0 +1,8 @@
+7zr.exe 26.04 (2026-10-05)
+Author: Igor Pavlov
+Project: https://www.7-zip.org/sdk.html
+Download: https://www.7-zip.org/a/7zr.exe
+License: Public domain (LZMA SDK).
+
+This unmodified reduced console executable is used to create local 7z diagnostic archives.
+SHA-256: 256feca8e274e5da655e2a284fabafd9f554365eb164862089dacd4e8276d282

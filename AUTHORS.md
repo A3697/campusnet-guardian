@@ -10,3 +10,5 @@
 本分支增加和调整了校园门户认证、Windows 登录自启、托盘与重连策略、小时/分钟时段编辑、窗口滚动及安装/卸载功能，并将显示名称改为“校园网连接守护”。原项目及原作者不因此对本定制版本提供保证。
 
 托盘组件 pystray 0.19.5 采用 LGPL-3.0；相应源码随“源码与构建.zip”提供。其余组件的许可证见 `licenses` 目录。各组件的原有版权和许可证保持不变。
+
+环境数据压缩组件为 Igor Pavlov 开发的 7zr 26.04，属于 [LZMA SDK](https://www.7-zip.org/sdk.html)，采用 Public domain 许可。来源和校验值见 `third_party/7zip/README.md`。

@@ -22,7 +22,7 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import __version__, autostart, carrier, policy, singleton, updater
+from . import __version__, autostart, carrier, diagnostics, policy, singleton, updater
 from . import wifi as _wifi
 from .config import Config, _keyring_set, has_keyring, runtime_log_dir
 from .runner import Runner
@@ -126,6 +126,9 @@ class App:
         self._update_info = None
         self._update_cancel = None
         self._quit_after_update = False
+        self._diagnostics_cancel = None
+        self._quit_after_diagnostics = False
+        self._diagnostics_path = ""
 
         self._build_window()
         self._build_main()
@@ -397,6 +400,13 @@ class App:
         self.btn_connect.grid(row=0, column=0, sticky="ew", padx=(0, self._px(10)))
         self.btn_health = self._button(actions, "检测网络", self.health_check)
         self.btn_health.grid(row=0, column=1, sticky="ew")
+        self.btn_export = self._button(status_card, "采集并导出环境数据", self.export_diagnostics)
+        self.btn_export.pack(anchor="w", pady=(self._px(12), 0))
+        self.lbl_export = self._label(status_card, "无法识别网络时，可导出 7z 文件供排查。账号和密码会隐藏，文件不会自动上传。",
+                                      bg_=CARD, fg=MUTED, font=FONT_SMALL, justify="left")
+        self.lbl_export.pack(fill="x", pady=(self._px(6), 0))
+        self.lbl_export.bind("<Configure>", lambda e: self.lbl_export.configure(wraplength=max(100, e.width)))
+        self.btn_export_open = self._button(status_card, "打开导出文件夹", self.open_diagnostics_folder)
 
         card = self._card(content, pady=14)
         card.pack(fill="x", padx=self._px(24), pady=self._px(12))
@@ -472,6 +482,57 @@ class App:
         self.btn_cancel_update = self._button(row, "取消下载", self.cancel_update)
 
     # ------------------------------------------------------------ 软件更新
+    def export_diagnostics(self) -> None:
+        from tkinter import filedialog
+        if self._busy or self._closing or self._policy_win is not None:
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title="导出网络环境数据", defaultextension=".7z",
+            filetypes=[("7z 压缩文件", "*.7z")],
+            initialfile="校园网环境数据-{}.7z".format(datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+        if not path:
+            return
+        original = self._fresh_cfg()
+        cfg = Config.from_dict(original.to_dict(include_password=True), path=original.path)
+        secrets = (self.var_username.get(), self.var_password.get(), self._saved_password, self.var_ssid.get())
+        if self._page == "setup":
+            cfg.portal_mode = "auto" if self.var_auto_portal.get() else "manual"
+            cfg.portal_ip = self.var_portal.get().strip()
+            cfg.provider = self.provider_map.get(self.combo_provider.get(), "auto")
+        ui_log = "界面状态：{}\n{}\n入口提示：{}\n\n{}".format(
+            self.lbl_status.cget("text"), self.lbl_detail.cget("text"),
+            self.lbl_portal_hint.cget("text"), self.log_box.get("1.0", "end-1c"))
+        self._diagnostics_cancel = threading.Event()
+        self.btn_cancel_export.configure(state="normal")
+        self.btn_cancel_export.pack(anchor="e", pady=(self._px(4), 0))
+        self._start_action(self._job_export, "正在采集环境数据，网络异常时仍会导出已有结果…",
+                           cfg, path, self._diagnostics_cancel, secrets, ui_log)
+
+    def _job_export(self, cfg, path, cancel, secrets, ui_log) -> None:
+        try:
+            result = diagnostics.export_environment(cfg, path, cancel=cancel, extra_secrets=secrets,
+                ui_log=ui_log, progress=lambda text: self.q.put(("export_progress", text)))
+            self.q.put(("export_done", result))
+        except diagnostics.ExportCancelled as exc:
+            self.q.put(("export_error", str(exc)))
+        except Exception as exc:
+            # Export failures should describe the file operation, not a login failure.
+            message = str(exc) if isinstance(exc, diagnostics.ExportError) else "导出失败，请检查保存位置和可用空间后重试。"
+            self.q.put(("export_error", message))
+
+    def cancel_diagnostics(self) -> None:
+        if self._diagnostics_cancel is not None:
+            self._diagnostics_cancel.set()
+            self.btn_cancel_export.configure(state="disabled")
+            self._feedback("正在取消采集并清理临时文件…")
+
+    def open_diagnostics_folder(self) -> None:
+        if self._diagnostics_path:
+            try:
+                os.startfile(os.path.dirname(self._diagnostics_path))
+            except OSError:
+                self._feedback("无法打开文件夹，导出位置：" + self._diagnostics_path, "warn")
+
     def check_update(self) -> None:
         if self._busy or self._page != "main" or self._policy_win is not None:
             return
@@ -641,9 +702,11 @@ class App:
         self.lbl_portal_hint = self._label(card, "连接校园网后自动识别；也可取消勾选后手动填写。", bg_=CARD, fg=MUTED, font=FONT_SMALL)
         self.lbl_portal_hint.grid(row=21, column=0, sticky="ew", pady=(0, self._px(8)))
         self.lbl_portal_hint.bind("<Configure>", lambda e: self.lbl_portal_hint.configure(wraplength=max(100, e.width)))
+        self.btn_setup_export = self._button(card, "采集并导出环境数据", self.export_diagnostics)
+        self.btn_setup_export.grid(row=22, column=0, sticky="w", pady=(0, self._px(8)))
         card.grid_columnconfigure(0, weight=1)
         self._setup_inputs = [ent_user, self.ent_pw, combo, ent_ssid, chk_auto,
-                              chk_portal, self.ent_portal, self.combo_provider, self.btn_discover]
+                              chk_portal, self.ent_portal, self.combo_provider, self.btn_discover, self.btn_setup_export]
 
         self.lbl_setup_error = self._label(inner, "", bg_=BG,
                                            fg=RED, font=FONT_SMALL)
@@ -727,6 +790,7 @@ class App:
         self.lbl_feedback.pack(fill="x")
         self.lbl_feedback.bind("<Configure>", lambda e: self.lbl_feedback.configure(wraplength=max(100, e.width)))
         self.progress = ttk.Progressbar(frame, mode="indeterminate")
+        self.btn_cancel_export = self._button(frame, "取消采集", self.cancel_diagnostics)
 
     def _feedback(self, message: str, level: str = "info") -> None:
         self.lbl_feedback.configure(text=message, fg={"ok":GREEN, "warn":AMBER, "error":RED}.get(level, MUTED))
@@ -887,7 +951,29 @@ class App:
 
     def _dispatch(self, msg: Tuple) -> None:
         kind = msg[0]
-        if kind == "update_info":
+        if kind == "export_progress":
+            if self._active_job == self._job_export and not self._diagnostics_cancel.is_set():
+                self._feedback(msg[1])
+        elif kind in ("export_done", "export_error"):
+            self._set_busy(False, "")
+            self.btn_cancel_export.pack_forget()
+            if kind == "export_done":
+                result = msg[1]
+                self._diagnostics_path = result.path
+                message = "已导出 7z 文件（{:.2f} MB）：{}".format(result.size / 1048576, result.path)
+                if result.warnings:
+                    message += "\n部分项目未获取，已有结果及原因均已保留。"
+                self.lbl_export.configure(text=message, fg=GREEN)
+                self.btn_export_open.pack(anchor="w", pady=(self._px(6), 0))
+                self._feedback(message, "ok")
+                self._append_log("环境数据已导出到所选位置，文件未上传。", "ok")
+            else:
+                self._feedback(msg[1], "warn")
+                self._append_log(msg[1], "warn")
+            if self._quit_after_diagnostics:
+                self._quit_after_diagnostics = False
+                self.root.after_idle(self.quit_app)
+        elif kind == "update_info":
             info = msg[1]
             self._update_info = info if info.newer_than(__version__) else None
             self._set_busy(False, "")
@@ -1008,7 +1094,7 @@ class App:
             self._active_job = None
         state = "disabled" if busy else "normal"
         for btn in (self.btn_connect, self.btn_health, self.btn_setup, self.btn_autostart,
-                    self.btn_save, self.btn_save_connect, self.btn_back, self.btn_policy):
+                    self.btn_save, self.btn_save_connect, self.btn_back, self.btn_policy, self.btn_export):
             btn.configure(state=state)
         for widget in self._setup_inputs:
             widget.configure(state="disabled" if busy else
@@ -1756,6 +1842,10 @@ class App:
         self._append_log("已最小化到系统托盘，双击托盘图标可以重新打开", "info")
 
     def quit_app(self) -> None:
+        if self._active_job == self._job_export:
+            self._quit_after_diagnostics = True
+            self.cancel_diagnostics()
+            return
         if self._active_job == self._job_download_update:
             self._quit_after_update = True
             self.cancel_update()

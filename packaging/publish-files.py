@@ -22,8 +22,8 @@ def main():
     destination = ROOT / "downloads"
     destination.mkdir(exist_ok=True)
     shutil.copy2(source, destination / info.filename)
-    (destination / "SHA256.txt").write_text(info.sha256 + "  " + info.filename + "\n", encoding="utf-8")
-    (destination / "latest.json").write_text(json.dumps(dict(schema=1, **info.__dict__), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (destination / "SHA256.txt").write_text(info.sha256 + "  " + info.filename + "\n", encoding="utf-8", newline="\n")
+    (destination / "latest.json").write_text(json.dumps(dict(schema=1, **info.__dict__), ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     print("已生成版本安装包、SHA-256 校验值和 GitHub 更新信息。")
 
 
