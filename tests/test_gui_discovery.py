@@ -56,3 +56,33 @@ def test_random_mac_setting_saves_with_existing_reconnect_options(app, tmp_path)
     from campusnet.config import Config
     saved = Config.load(app.cfg.path)
     assert saved.options["random_mac_retry"] is True and saved.options["unrelated"] == "keep"
+
+
+def test_manual_discover_uses_current_unsaved_input(app, monkeypatch):
+    app.show_setup()
+    app.var_auto_portal.set(False)
+    app.var_portal.set('https://selected.example/login?ac_id=42')
+    calls=[]
+    monkeypatch.setattr(app,'_spawn',lambda fn,*args:calls.append((fn,args)))
+    app.discover_portal()
+    cfg=calls[0][1][0]
+    assert not cfg.automatic_portal and cfg.portal_ip=='https://selected.example/login?ac_id=42'
+
+
+def test_manual_detection_keeps_discovered_parameters_when_saving(app,monkeypatch):
+    app.show_setup()
+    app.var_auto_portal.set(False)
+    detected=Detection(portal='https://selected.example/login?ac_id=42',scores=[('srun',1.0)],notes={'ac_id':'42'})
+    app._dispatch(('portal_found',detected))
+    calls=[]
+    monkeypatch.setattr(app,'_spawn',lambda fn,*args:calls.append(args))
+    app.save_setup()
+    assert calls[0][-1][3]=={'ac_id':'42'}
+
+
+def test_authenticated_account_is_not_displayed_as_not_connected(app):
+    app._job_state()
+    data=app.q.get_nowait()[1]
+    data.update(online=False,authenticated=True,detail='账号已认证，网页连通性暂未确认')
+    app._apply_state(data)
+    assert '已认证' in app.lbl_status.cget('text')

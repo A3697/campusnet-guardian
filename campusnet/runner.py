@@ -30,6 +30,7 @@ class RunResult:
     status_before: Optional[NetStatus] = None
     detection: Optional[Detection] = None
     attempts: List[LoginResult] = field(default_factory=list)
+    status_after: Optional[NetStatus] = None
 
 
 class Runner:
@@ -83,21 +84,33 @@ class Runner:
             if provider == "srun" and portal and self.cfg.username:
                 from .providers.srun import SrunProvider
                 state = SrunProvider(self.session, options).online_state(portal, self.cfg.username)
-                if state is not True:
-                    return NetStatus(False, status.portal_url or portal,
-                                     detail="校园网门户报告未认证" if state is False else "无法核实校园网门户会话")
+                return self._account_status(status, state)
             return status
         hint = self.cfg.portal_ip and (self.cfg.portal_ip if "//" in self.cfg.portal_ip
                                        else "http://" + self.cfg.portal_ip + "/")
+        state = None
         if self.cfg.provider == "srun" and hint:
             from .providers.srun import SrunProvider
-            state = SrunProvider(self.session, self.cfg.options).online_state(hint, self.cfg.username)
+            state = SrunProvider(self.session, self._portal_options({})).online_state(hint, self.cfg.username)
             if state is False:
                 return NetStatus(online=False, portal_url=hint,
-                                 detail="校园网门户报告未认证")
-            if state is None and self.cfg.options.get("verify_srun_session"):
-                return NetStatus(online=False, portal_url=hint, detail="无法核实校园网门户会话")
-        return check_online(self.session, hint or "")
+                                 detail="校园网门户报告未认证", authenticated=False)
+        status = check_online(self.session, hint or "")
+        if self.cfg.provider == "srun" and hint:
+            return self._account_status(status, state)
+        return status
+
+    @staticmethod
+    def _account_status(status: NetStatus, state: Optional[bool]) -> NetStatus:
+        status.authenticated = state
+        if state is False:
+            status.online = False
+            status.detail = "校园网门户报告未认证"
+        elif state is True and not status.online:
+            status.detail = "账号已认证，网页连通性暂未确认，请稍后检测网络。"
+        elif state is None and status.online:
+            status.detail = "网页已连通，校园网会话暂未确认。"
+        return status
 
     def _portal_options(self, discovered) -> dict:
         options = dict(self.cfg.options)
@@ -106,6 +119,11 @@ class Runner:
                 options.pop(key, None)
             options.update({key: value for key, value in discovered.items() if value and
                             key in PORTAL_OPTION_KEYS})
+        else:
+            options.update({key: value for key, value in self.cfg.discovered_options.items()
+                            if value and key in PORTAL_OPTION_KEYS})
+            options.update({key: value for key, value in discovered.items()
+                            if value and key in PORTAL_OPTION_KEYS})
         return options
 
     def _verify_login_status(self, provider, portal, options):
@@ -140,7 +158,8 @@ class Runner:
             self.log("识别到认证系统：{}（置信度 {:.2f}）".format(
                 detection.best, detection.scores[0][1]), "ok")
         else:
-            self.log("未能识别校园网登录页面，请连接校园网后重试，或在账号设置中手动填写。", "warn")
+            self.log(detection.detail or "未能识别校园网登录页面，请连接校园网后重试，或在账号设置中手动填写。",
+                     "debug" if status is not None and status.online else "warn")
         return detection
 
     # ------------------------------------------------------------ Wi-Fi
@@ -206,6 +225,9 @@ class Runner:
         status = self.status()
         if status.online and not force:
             return RunResult(ok=True, skipped=True, message="已联网，无需认证", status_before=status)
+        if status.authenticated is True and not force:
+            return RunResult(ok=False, skipped=True, message=status.describe(), status_before=status,
+                             status_after=status)
 
         if status.online and force:
             self.log("当前已联网，但指定了 --force，仍要重新认证一次", "warn")
@@ -275,19 +297,30 @@ class Runner:
                 return RunResult(ok=True, provider=name, message=result.message,
                                  status_before=status, detection=detection, attempts=attempts)
 
-            wait = float(cfg.options.get("verify_delay", 2))
-            if wait:
-                time.sleep(wait)
-            after = self._verify_login_status(name, portal, options)
+            wait = max(0, min(float(cfg.options.get("verify_delay", 2)), 10))
+            deadline = time.monotonic() + 30
+            for attempt in range(3):
+                if wait:
+                    time.sleep(wait)
+                after = self._verify_login_status(name, portal, options)
+                if after.online or time.monotonic() + wait >= deadline:
+                    break
+                if attempt < 2:
+                    self.log("认证接口已应答，正在复查账号会话和网页连通性…", "info")
             if after.online:
-                self._remember_portal(detection, name)
+                if not verify_session or after.authenticated is True:
+                    self._remember_portal(detection, name)
                 message = ("门户返回已在线，已核实网络可用" if result.already_online
                            else "认证成功，网络已连通")
+                if verify_session and after.authenticated is None:
+                    message = after.detail or "网页已连通，校园网会话暂未确认。"
                 return RunResult(ok=True, provider=name, message=message,
-                                 status_before=status, detection=detection, attempts=attempts)
+                                 status_before=status, detection=detection, attempts=attempts, status_after=after)
             if verify_session:
-                return RunResult(ok=False, provider=name, message="认证接口已应答，但未能同时确认本账号的门户会话和网页连通性",
-                                 status_before=status, detection=detection, attempts=attempts)
+                message = (after.describe() if after.authenticated is True else
+                           "认证接口已应答，但复查尚未确认网络可用。" + after.describe())
+                return RunResult(ok=False, provider=name, message=message,
+                                 status_before=status, detection=detection, attempts=attempts, status_after=after)
             self.log("接口返回成功，但联网校验未通过，继续尝试其它方式", "warn")
 
         message = attempts[-1].message if attempts else "没有可用的认证方式"
@@ -462,9 +495,14 @@ class Runner:
         if status.online:
             if wifi.changed:
                 self.log("已切回校园 Wi-Fi，网络正常", "ok")
-            elif self.cfg.options.get("verify_srun_session"):
+            elif status.authenticated is True:
                 self.log("例行检查通过：校园账号会话在线，可访问网页", "ok")
+            else:
+                self.log("例行检查通过：网页可访问。", "ok")
             return True
+        if status.authenticated is True:
+            self.log(status.describe() + " 本轮不重复认证。", "warn")
+            return False
 
         # 延时重连：先等一会儿再抢，把网络留给手机。
         # 等待过程中每 5 秒回看一眼策略，暂停了就不再登录。

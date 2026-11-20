@@ -598,6 +598,7 @@ class TestWatchWarmup:
         class S:
             def __init__(self, online):
                 self.online = online
+                self.authenticated = None
 
         def fake_wifi(ssid, **kwargs):
             # 守护模式必须走"耐心"那条路，否则开机抢不到网

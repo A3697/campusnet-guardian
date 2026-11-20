@@ -168,7 +168,7 @@ def test_inline_feedback_does_not_open_modal_and_log_masks_password(app,monkeypa
     monkeypatch.setattr(messagebox,"showinfo",lambda *a,**k:pytest.fail("Modal success dialog"))
     monkeypatch.setattr(messagebox,"showerror",lambda *a,**k:pytest.fail("Modal failure dialog"))
     app._on_connect_done(True,"success","")
-    assert "已连接" in app.lbl_feedback.cget("text")
+    assert app.lbl_feedback.cget("text") == "success"
     app._on_connect_done(False,"failure demo-pass","details")
     assert app._logs_open and "demo-pass" not in app.log_box.get("1.0","end")
     app._on_health("diagnostic result")

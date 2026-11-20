@@ -832,13 +832,24 @@ class App:
         disabled = self._busy or self.var_auto_portal.get()
         self.ent_portal.configure(state="disabled" if disabled else "normal")
         self.combo_provider.configure(state="disabled" if disabled else "readonly")
+        self.btn_discover.configure(text="获取登录地址" if self.var_auto_portal.get() else "识别此地址")
 
     def discover_portal(self) -> None:
-        self._start_action(self._job_discover_portal, "正在获取校园网登录地址…")
+        if self._busy:
+            return
+        from .detector import normalize_portal
+        cfg = Config.from_dict(self._fresh_cfg().to_dict())
+        cfg.portal_mode = "auto" if self.var_auto_portal.get() else "manual"
+        cfg.portal_ip = "" if cfg.automatic_portal else normalize_portal(self.var_portal.get())
+        cfg.provider, cfg.discovered_options = "auto", {}
+        if not cfg.automatic_portal and not cfg.portal_ip:
+            self.lbl_portal_hint.configure(text="请先填写有效的 HTTP/HTTPS 认证地址。")
+            return
+        self._setup_discovery = None
+        self._start_action(self._job_discover_portal,
+                           "正在获取校园网登录地址…" if cfg.automatic_portal else "正在识别填写的认证地址…", cfg)
 
-    def _job_discover_portal(self) -> None:
-        cfg = Config.from_dict(self.cfg.to_dict())
-        cfg.portal_mode = "auto"
+    def _job_discover_portal(self, cfg) -> None:
         # Discovery does not read or send a password.
         self.q.put(("portal_found", Runner(cfg).detect()))
 
@@ -922,7 +933,7 @@ class App:
                 self._feedback("状态读取未完成，可按 F5 重试。", "warn")
         elif kind == "connect":
             self._set_busy(False, "")
-            self._on_connect_done(msg[1], msg[2], msg[3])
+            self._on_connect_done(*msg[1:])
         elif kind == "health":
             self._set_busy(False, "")
             self._on_health(msg[1])
@@ -944,7 +955,8 @@ class App:
                 self.lbl_portal_hint.configure(text=message)
                 self._feedback(message, "ok")
             else:
-                message = "未找到可识别的登录页面。已联网时可能不会跳转；可在未认证时重试，或取消自动获取并手动填写。"
+                self._setup_discovery = None
+                message = detected.detail or "未找到可识别的登录页面。已联网时可能不会跳转；可在未认证时重试，或取消自动获取并手动填写。"
                 self.lbl_portal_hint.configure(text=message)
                 self._feedback(message, "warn")
         elif kind == "prefill":
@@ -1064,6 +1076,7 @@ class App:
         try:
             status = Runner(cfg).status()
             data["online"] = status.online
+            data["authenticated"] = status.authenticated
             data["detail"] = status.describe()
         except Exception as exc:
             data["online"] = False
@@ -1089,7 +1102,7 @@ class App:
             except OSError:
                 self.q.put(("log", "已连接，但认证门户未能保存。", "warn"))
         attempts = "\n".join(a.short() for a in result.attempts)
-        self.q.put(("connect", result.ok, result.message, attempts))
+        self.q.put(("connect", result.ok, result.message, attempts, result.status_after))
 
     def _job_health(self) -> None:
         cfg = self._fresh_cfg()
@@ -1139,6 +1152,10 @@ class App:
         cfg.wifi_ssid = ssid
         if portal_settings is not None:
             cfg.portal_mode, cfg.portal_ip, cfg.provider, cfg.discovered_options = portal_settings
+            if not cfg.automatic_portal and (cfg.portal_ip, cfg.provider) != (previous.portal_ip, previous.provider):
+                from .runner import PORTAL_OPTION_KEYS
+                for key in PORTAL_OPTION_KEYS:
+                    cfg.options.pop(key, None)
         try:
             cfg.save()
         except OSError as exc:
@@ -1210,7 +1227,14 @@ class App:
             if not address or not provider:
                 self.lbl_setup_error.configure(text="请填写有效的 HTTP/HTTPS 登录地址，并选择认证方式。")
                 return
-            portal_settings = ("manual", address, provider, {})
+            detected = self._setup_discovery
+            notes = (dict(detected.notes) if detected and detected.portal == address and detected.best == provider else {})
+            if provider == "srun":
+                from urllib.parse import parse_qs, urlsplit
+                acid = parse_qs(urlsplit(address).query).get("ac_id", [""])[0]
+                if acid.isdigit():
+                    notes["ac_id"] = acid
+            portal_settings = ("manual", address, provider, notes)
         self._start_action(self._job_save_setup, "正在保存账号设置…", username,
                            password, carrier_code, ssid, self.var_autostart.get(), connect_after, portal_settings)
         # 保存线程完成后会发 "saved" 消息，由它切回主界面并自动连接一次
@@ -1220,6 +1244,9 @@ class App:
         if data["online"] is True:
             self.lbl_status.configure(text="已连接，可以上网了", fg=GREEN)
             dot = GREEN
+        elif data.get("authenticated") is True:
+            self.lbl_status.configure(text="账号已认证，网络待确认", fg=AMBER)
+            dot = AMBER
         elif data["online"] is False:
             self.lbl_status.configure(text="还没连上校园网", fg=RED)
             dot = RED
@@ -1236,6 +1263,7 @@ class App:
         first_check = not self._auto_connect_done
         self._auto_connect_done = True
         if (first_check and self._page == "main" and data.get("online") is False
+                and data.get("authenticated") is not True
                 and data.get("configured") and not self._busy
                 and not singleton.windows_watch_running()
                 and not policy.block_reason(self._fresh_cfg())):
@@ -1257,14 +1285,14 @@ class App:
         self.btn_connect.configure(text="重新认证" if data["online"] else "连接校园网")
         self._refresh_policy_row()
 
-    def _on_connect_done(self, ok: bool, message: str, attempts: str) -> None:
+    def _on_connect_done(self, ok: bool, message: str, attempts: str, status=None) -> None:
+        level = "ok" if ok else ("warn" if status and status.authenticated is True else "error")
         if not ok:
             self.toggle_log(True)
-        self._append_log(message, "ok" if ok else "error")
+        self._append_log(message, level)
         if attempts:
             self._append_log(attempts, "info" if ok else "error")
-        self._feedback("已连接，校园网可以正常使用。" if ok else
-                       "连接未完成，请检查账号或展开日志查看原因。", "ok" if ok else "error")
+        self._feedback(message, level)
         self._request_state()
 
     def _on_health(self, text: str) -> None:

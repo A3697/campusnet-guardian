@@ -301,7 +301,9 @@ class SrunProvider(Provider):
 
     @staticmethod
     def _json(resp) -> Optional[Dict[str, Any]]:
-        payload = resp.jsonp_payload
+        payload = resp.text.strip()
+        if not payload.startswith("{"):
+            payload = resp.jsonp_payload
         if not payload:
             return None
         try:

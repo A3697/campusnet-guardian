@@ -1,11 +1,12 @@
 """联网状态判定 + 门户探测 + 指纹识别。
 
-判定「是否真的联网」要过两道关，缺一不可：
+联网判断使用不同类型的响应交叉验证：
 
 1. **劫持探测** —— ``generate_204`` 这类地址在真正联网时必须返回 204；
    被 Portal 拦截时会变成 302 或直接吐登录页 HTML。
 2. **真实内容校验** —— 抓一个正常网页并检查内容标记。
-   学校经常把探测地址加进白名单，只看第 1 关会误判为"已联网"。
+   探测地址可能被白名单放行，不能只看第 1 项。
+   探测服务不可用且没有认证跳转时，要求至少两个正常网页通过校验。
 """
 
 from __future__ import annotations
@@ -48,10 +49,14 @@ class NetStatus:
     probe: str = ""
     status: int = 0
     detail: str = ""
+    authenticated: Optional[bool] = None
+    portal_urls: List[str] = field(default_factory=list)
 
     def describe(self) -> str:
         if self.online:
-            return "已联网"
+            return self.detail or "已联网"
+        if self.authenticated is True:
+            return self.detail or "账号已认证，网页连通性暂未确认"
         if self.detail == "无法核实校园网门户会话":
             return self.detail
         if self.portal_url:
@@ -67,6 +72,7 @@ class Detection:
     title: str = ""
     scores: List[Tuple[str, float]] = field(default_factory=list)
     notes: Dict[str, Any] = field(default_factory=dict)
+    detail: str = ""
 
     @property
     def best(self) -> str:
@@ -79,6 +85,45 @@ class Detection:
 
 
 # -------------------------------------------------------------------- 联网判定
+def _normal_probe_redirect(source: str, target: str) -> bool:
+    """Only follow a probe site's own redirects, never a captive portal's."""
+    before, after = urlsplit(source), urlsplit(target)
+    if before.scheme == "https" and after.scheme != "https":
+        return False
+    if before.hostname == after.hostname:
+        return before.port == after.port or (before.scheme == "http" and after.scheme == "https"
+                                            and after.port in (None, 443))
+    # These are the owners of CONTENT_PROBES; Bing uses a regional hostname.
+    for domain in ("baidu.com", "qq.com", "bing.com"):
+        if all(host and (host == domain or host.endswith("." + domain))
+               for host in (before.hostname, after.hostname)):
+            return after.scheme == "https" and after.port in (None, 443)
+    return False
+
+
+def _probe_response(session: Session, url: str):
+    current, seen = url, set()
+    for _ in range(4):
+        seen.add(current)
+        response = session.get(current, timeout=5)
+        target = redirect_target(response, current)
+        if not target:
+            return response, ""
+        if not _normal_probe_redirect(url, target):
+            return response, target
+        if target in seen:
+            break
+        current = target
+    return response, ""
+
+
+def _record_portal(status: NetStatus, url: str) -> None:
+    if url and url not in status.portal_urls:
+        status.portal_urls.append(url)
+        if not status.portal_url:
+            status.portal_url = url
+
+
 def check_online(session: Session, portal_hint: str = "") -> NetStatus:
     """综合两关判断是否真的联网；顺便把 Portal 地址带回来。"""
     status = NetStatus()
@@ -86,16 +131,15 @@ def check_online(session: Session, portal_hint: str = "") -> NetStatus:
 
     for url, expect, marker in HIJACK_PROBES:
         try:
-            resp = session.get(url, timeout=5)
+            resp, location = _probe_response(session, url)
         except HttpError as exc:
             status.detail = str(exc)
             continue
 
-        location = redirect_target(resp, url)
         if location:
-            status.portal_url = location
+            _record_portal(status, location)
         elif not hijack_ok and _looks_like_portal(resp):
-            status.portal_url = resp.url
+            _record_portal(status, resp.url or url)
             status.status = resp.status
 
         if resp.status == expect and not location:
@@ -104,27 +148,27 @@ def check_online(session: Session, portal_hint: str = "") -> NetStatus:
                 status.probe = url
                 status.status = resp.status
 
-    if not hijack_ok:
-        if not status.detail:
-            status.detail = "Portal 劫持探测未通过"
-        if not status.portal_url and portal_hint:
-            status.portal_url = portal_hint
-        return status
-
+    content_ok = 0
     for url, marker in CONTENT_PROBES:
         try:
-            resp = session.get(url, timeout=5)
+            resp, target = _probe_response(session, url)
         except HttpError:
             continue
-        target = redirect_target(resp, url)
         if target:
-            status.portal_url = target
+            _record_portal(status, target)
         if resp.status == 200 and not target and marker in resp.text.lower():
-            status.online = True
-            status.detail = ""
-            return status
+            content_ok += 1
+            # Public connectivity endpoints can be unavailable/rate-limited.
+            # Require two real sites in that case, and never ignore a captive redirect.
+            if hijack_ok or (content_ok >= 2 and not status.portal_url):
+                status.online = True
+                status.detail = ""
+                return status
 
-    status.detail = "能过劫持探测，但抓不到真实网页内容（可能被白名单）"
+    if not status.portal_url and portal_hint:
+        status.portal_url = portal_hint
+    status.detail = ("能过劫持探测，但抓不到真实网页内容（可能被白名单）" if hijack_ok
+                     else "联网检测未通过，暂未确认网页可访问")
     return status
 
 
@@ -289,6 +333,7 @@ def portal_candidates(cfg: Config, status: NetStatus) -> List[str]:
         return [address] if address else []
     if status.portal_url:
         raw.append(status.portal_url)
+    raw.extend(status.portal_urls)
     gateway = default_gateway()
     if gateway:
         raw.append(gateway)
@@ -304,8 +349,10 @@ def portal_candidates(cfg: Config, status: NetStatus) -> List[str]:
 # -------------------------------------------------------------------- 探测识别
 def detect(session: Session, cfg: Config, status: Optional[NetStatus] = None) -> Detection:
     """Follow bounded portal redirects, then identify the page without sending credentials."""
-    status = status or check_online(session, _hint(cfg))
+    if status is None:
+        status = check_online(session, _hint(cfg)) if cfg.automatic_portal else NetStatus()
     result = Detection()
+    failures = []
 
     visited = set()
     deadline = time.monotonic() + 30
@@ -316,13 +363,15 @@ def detect(session: Session, cfg: Config, status: Optional[NetStatus] = None) ->
             visited.add(candidate)
             try:
                 resp = session.get(candidate, timeout=min(cfg.timeout, 4))
-            except HttpError:
+            except HttpError as exc:
+                failures.append("{}：{}".format(candidate, exc))
                 break
             target = redirect_target(resp, candidate)
             if target:
                 candidate = target
                 continue
             if resp.status != 200:
+                failures.append("{} 返回 HTTP {}".format(candidate, resp.status))
                 break
             page_url = normalize_portal(resp.url or candidate)
             text = resp.text[:262144]
@@ -343,6 +392,7 @@ def detect(session: Session, cfg: Config, status: Optional[NetStatus] = None) ->
                     continue
             scores = fingerprint(DetectContext(page_url, resp, text, resp.headers))
             if not scores:
+                failures.append("页面已打开，但未识别认证方式：{}".format(page_url))
                 break
             query = parse_qs(urlsplit(page_url).query)
             acid = query.get("ac_id", [""])[0] or page.ac_id or _find(r"ac_id\s*[=:]\s*['\"]?(\d+)", text)
@@ -362,6 +412,12 @@ def detect(session: Session, cfg: Config, status: Optional[NetStatus] = None) ->
                     notes[key] = path
             return Detection(page_url, resp.status, resp.server, _title(resp.text), scores, notes)
 
+    if status.online and cfg.automatic_portal:
+        result.detail = "当前已联网，网络没有提供可识别的认证跳转。可取消自动获取，填写地址后点击“识别此地址”。"
+    elif failures:
+        result.detail = "未能获取认证页面。" + "；".join(failures[-2:])
+    else:
+        result.detail = "当前网络未提供认证入口。请确认已接入校园网，或手动填写浏览器中的认证地址。"
     return result
 
 

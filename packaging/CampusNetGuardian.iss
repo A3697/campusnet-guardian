@@ -1,5 +1,5 @@
 #define AppName "校园网连接守护"
-#define AppVersion "0.1.5+desktop.20261119.2"
+#define AppVersion "0.1.5+desktop.20261120.1"
 #define AppExe "校园网连接守护.exe"
 #ifndef AppId
   #define AppId "CampusNetGuardian.Desktop"
@@ -35,7 +35,7 @@ UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 UninstallFilesDir={app}
 OutputDir=output
-OutputBaseFilename=校园网连接守护-20261119.2-安装包
+OutputBaseFilename=校园网连接守护-20261120.1-安装包
 Compression=lzma2
 SolidCompression=yes
 CloseApplications=no
